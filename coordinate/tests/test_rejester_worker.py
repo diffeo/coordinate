@@ -20,15 +20,8 @@ import yaml
 
 from coordinate.job_client import TaskMaster
 from coordinate.workers import SingleWorker, ForkWorker
-#from rejester.tests.test_workers import test_single_worker, test_do_work, \
-#    test_failed_work, test_add_more_work, test_add_work_midway, \
-#    test_fork_worker_expiry_kill, test_fork_worker_expiry_dup
 
 logger = logging.getLogger(__name__)
-
-# class SuperFakeRegistry(object):
-#     def __init__(self, config):
-#         self.config = config
 
 # runs a local in-memory-only coordinate daemon, returns port it started on
 @pytest.yield_fixture(scope='module')
@@ -47,15 +40,10 @@ def local_server_port():
     except:
         logger.error('error killing coordinate subprocess', exc_info=True)
 
-
-#@pytest.fixture(scope='function')
-#def namespace_string(request):
-#    return 'foo'
-
 @pytest.yield_fixture(scope='function')
 def task_master(local_server_port):
     config = {
-        'registry_addresses': ['127.0.0.1:' + str(local_server_port)],
+        'addresses': ['127.0.0.1:' + str(local_server_port)],
         'namespace': 'test_ns',
     }
     tm = TaskMaster(config)

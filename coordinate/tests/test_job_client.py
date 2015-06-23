@@ -24,6 +24,8 @@ def job_queue():
     return jq
 
 
+# Return a TaskMaster that points to local server.
+# RPCs go object to object, no networking happens.'''
 @pytest.fixture
 def task_master(job_queue):
     class Conn(object):
