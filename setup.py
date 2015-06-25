@@ -13,7 +13,7 @@ from setuptools import setup, find_packages
 from version import get_git_version
 VERSION, SOURCE_HASH = get_git_version()
 PROJECT = 'coordinate'
-URL = 'http://diffeo.com'
+URL = 'http://github.com/diffeo/coordinate'
 AUTHOR = 'Diffeo, Inc.'
 AUTHOR_EMAIL = 'support@diffeo.com'
 DESC = 'Tools for large scale data clustering.'
@@ -154,8 +154,8 @@ setup(
     # + recursive_glob_with_tree('data', '*'),
     entry_points={
         'console_scripts': [
-            'coordinate = coordinated.coordinatec:main',
-            'coordinated = coordinated.run:main',
+            'coordinate = coordinate.coordinatec:main',
+            'coordinated = coordinate.run:main',
         ]
     },
 )
