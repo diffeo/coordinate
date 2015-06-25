@@ -156,6 +156,7 @@ setup(
         'console_scripts': [
             'coordinate = coordinate.coordinatec:main',
             'coordinated = coordinate.run:main',
+            'coordinate_worker = coordinate.run_multi_worker:main',
         ]
     },
 )
