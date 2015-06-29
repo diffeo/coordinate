@@ -52,3 +52,8 @@ RUN = 'RUN'
 IDLE = 'IDLE'
 #: Mode constant instructing workers to shut down
 TERMINATE = 'TERMINATE'
+
+# You may not lease a work unit for more than one day
+MAX_LEASE_SECONDS = (24 * 3600)
+MIN_LEASE_SECONDS = 1
+DEFAULT_LEASE_SECONDS = 300
