@@ -294,6 +294,7 @@ class WorkSpec(object):
         self.jobq._log_action(action, args)
 
     def priority(self):
+        "peek at next work unit, return its priority, thus the priority of this queue"
         with self.mutex:
             if not self.queue:
                 return 0
@@ -569,15 +570,7 @@ class WorkSpec(object):
         finishing = False
         if (lease_time is None) and (status is None):
             return False, 'nothing to do'
-        if lease_time is not None:
-            # lease time is seconds into the future,
-            # convert to absolute time.
-            if lease_time > MAX_LEASE_SECONDS:
-                logger.warn('bogus lease_time %s > %s, clamped to %s',
-                            lease_time, MAX_LEASE_SECONDS,
-                            DEFAULT_LEASE_SECONDS)
-                lease_time = DEFAULT_LEASE_SECONDS
-            lease_time = time.time() + float(lease_time)
+        lease_time = self._normalize_lease_time(lease_time)
         with self.mutex:
             self._log_action('update_work_unit',
                              (self.name, work_unit_key, options))
@@ -591,6 +584,18 @@ class WorkSpec(object):
             self._trigger_flow(wu)
 
         return True, None
+
+    def _normalize_lease_time(self, lease_time):
+        if lease_time is not None:
+            # lease time is seconds into the future,
+            # convert to absolute time.
+            if lease_time > MAX_LEASE_SECONDS:
+                logger.warn('bogus lease_time %s > %s, clamped to %s',
+                            lease_time, MAX_LEASE_SECONDS,
+                            DEFAULT_LEASE_SECONDS)
+                lease_time = DEFAULT_LEASE_SECONDS
+            lease_time = time.time() + float(lease_time)
+        return lease_time
 
     def _update_work_unit(self, work_unit_key, lease_time=None, status=None, data=None, worker_id=None):
         # runs inside self.mutex context, returns updated WorkUnit
@@ -849,6 +854,7 @@ class WorkSpec(object):
             self.archived_counts_by_status[status] = count + 1
 
     def count_work_units(self):
+        "Return dictionary by status which is sum of current and archived work unit counts."
         with self.mutex:
             return self._count_work_units()
 

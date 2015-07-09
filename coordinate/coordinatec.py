@@ -5,7 +5,7 @@
 
 '''
 from __future__ import absolute_import, print_function
-from argparse import ArgumentParser
+import argparse
 import collections
 from importlib import import_module
 import json
@@ -647,7 +647,7 @@ def existing_path_or_minus(string):
 
 
 def main():
-    parser = ArgumentParser()
+    parser = argparse.ArgumentParser()
     app = CoordinateC()
     app.add_arguments(parser)
     args = yakonfig.parse_args(parser, [yakonfig, dblogger, coordinate])

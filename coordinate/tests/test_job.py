@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 from collections import Counter
 import logging
+import random
 import time
 
 # can't use cStringIO and subclass it
@@ -15,6 +16,7 @@ from coordinate.constants import AVAILABLE, PENDING, FINISHED, \
     RUNNABLE, PAUSED
 from coordinate.job_server import JobQueue, WorkSpecScheduler, \
     WorkSpec, SqliteWorkSpec, WorkUnit
+from coordinate.postgres_work_spec import PostgresWorkSpec
 from coordinate.job_sqlite import SqliteJobStorage
 
 logger = logging.getLogger(__name__)
@@ -30,9 +32,15 @@ def xconfig():
         yield config
 
 
+@pytest.fixture(scope='module')
+def random_schema():
+    random_schema = [chr(x) for x in xrange(ord('a'), ord('z'))]
+    random.shuffle(random_schema)
+    random_schema = ''.join(random_schema)
+    return random_schema
+
 def _make_WorkSpec(*args, **kwargs):
     return WorkSpec(*args, **kwargs)
-
 
 def _make_SqliteWorkSpec(*args, **kwargs):
     storage = SqliteJobStorage(':memory:')
@@ -46,10 +54,31 @@ def _make_SqliteWorkSpec(*args, **kwargs):
     sws._get_size = 2
     return sws
 
+# def _make_PostgresWorkSpec(random_schema, *args, **kwargs):
+#     return PostgresWorkSpec(
+#         connect_string='host=127.0.0.1 user=test dbname=test password=test',
+#         schema=random_schema,
+#         *args, **kwargs)
 
-@pytest.fixture(params=[_make_WorkSpec, _make_SqliteWorkSpec], scope='function')
-def work_spec_class(request):
-    return request.param
+def pwsfactory(random_schema):
+    def ff(*args, **kwargs):
+        return PostgresWorkSpec(
+            connect_string='host=127.0.0.1 user=test dbname=test password=test',
+            schema=random_schema,
+            *args, **kwargs)
+    return ff
+
+@pytest.yield_fixture(params=[_make_WorkSpec, _make_SqliteWorkSpec, 'PostgresWorkSpec'], scope='function')
+#@pytest.yield_fixture(params=[_make_WorkSpec, 'PostgresWorkSpec'], scope='function')
+#@pytest.yield_fixture(params=['PostgresWorkSpec'], scope='function')
+def work_spec_class(request, random_schema):
+    if request.param == 'PostgresWorkSpec':
+        pf = pwsfactory(random_schema)
+        yield pf
+        ws = pf('', None)
+        ws.delete_all_storage()
+    else:
+        yield request.param
 
 
 @pytest.fixture(params=[
