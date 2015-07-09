@@ -54,12 +54,6 @@ def _make_SqliteWorkSpec(*args, **kwargs):
     sws._get_size = 2
     return sws
 
-# def _make_PostgresWorkSpec(random_schema, *args, **kwargs):
-#     return PostgresWorkSpec(
-#         connect_string='host=127.0.0.1 user=test dbname=test password=test',
-#         schema=random_schema,
-#         *args, **kwargs)
-
 def pwsfactory(random_schema):
     def ff(*args, **kwargs):
         return PostgresWorkSpec(
@@ -69,8 +63,6 @@ def pwsfactory(random_schema):
     return ff
 
 @pytest.yield_fixture(params=[_make_WorkSpec, _make_SqliteWorkSpec, 'PostgresWorkSpec'], scope='function')
-#@pytest.yield_fixture(params=[_make_WorkSpec, 'PostgresWorkSpec'], scope='function')
-#@pytest.yield_fixture(params=['PostgresWorkSpec'], scope='function')
 def work_spec_class(request, random_schema):
     if request.param == 'PostgresWorkSpec':
         pf = pwsfactory(random_schema)

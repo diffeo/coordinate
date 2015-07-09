@@ -246,9 +246,6 @@ class PostgresWorkSpec(WorkSpec):
                     return row[0]
         return 0
 
-#    def update_data(self, data):
-#        pass
-
     def add_work_units(self, they):
         for wu in they:
             assert wu.status == AVAILABLE
@@ -257,30 +254,13 @@ class PostgresWorkSpec(WorkSpec):
             logger.debug('pg adding %s wu', len(kdps))
             with self._cursor() as cursor:
                 self._expire_stale_leases(cursor)
-                #cursor.execute('BEGIN') # cursor context is a transaction
                 cursor.execute('CREATE TEMPORARY TABLE awut (spec varchar(100), wukey bytea, wudata bytea, prio int) ON COMMIT DROP')
                 cursor.executemany('INSERT INTO awut (spec, wukey, wudata, prio) VALUES (%s, %s, %s, %s)'.format(schema=self._schema), kdps)
-
-                # cursor.execute('SELECT * FROM pg_temp.awut')
-                # logger.debug('awut...')
-                # for row in cursor:
-                #     logger.debug('awut: %r', row)
-
-                # cursor.execute('SELECT * FROM pg_temp.awut LEFT JOIN {schema}.wu ON {schema}.wu.wukey = pg_temp.awut.wukey AND {schema}.wu.spec = pg_temp.awut.spec'.format(schema=self._schema))
-                # logger.debug('awut join wu ...')
-                # for row in cursor:
-                #     logger.debug('awut@wu: %r', row)
 
                 cursor.execute('UPDATE {schema}.wu SET wudata = pg_temp.awut.wudata, prio = pg_temp.awut.prio, status = 1 FROM pg_temp.awut WHERE {schema}.wu.spec = pg_temp.awut.spec AND {schema}.wu.wukey = pg_temp.awut.wukey'.format(schema=self._schema))
                 cursor.execute(
 'INSERT INTO {schema}.wu (spec, wukey, wudata, prio, status) '
 'SELECT awut.spec, awut.wukey, awut.wudata, awut.prio, 1 FROM pg_temp.awut LEFT JOIN {schema}.wu ON {schema}.wu.wukey = awut.wukey AND {schema}.wu.spec = awut.spec WHERE {schema}.wu.spec IS NULL'.format(schema=self._schema))
-
-                # cursor.execute('SELECT * FROM {schema}.wu'.format(schema=self._schema))
-                # logger.debug('wu...')
-                # for row in cursor:
-                #     logger.debug('wu: %r', row)
-                #cursor.execute('COMMIT')
 
     def update_work_unit(self, work_unit_key, options):
         lease_time = options.get('lease_time')
@@ -359,7 +339,6 @@ class PostgresWorkSpec(WorkSpec):
         with self.mutex:
             with self._cursor() as cursor:
                 self._expire_stale_leases(cursor)
-                #cursor.execute('SELECT wukey, wudata, prio from {schema}.wu WHERE spec = %s ORDER BY prio DESC, wukey ASC LIMIT %s'.format(schema=self._schema), (self.name, max_jobs))
                 cursor.execute('SELECT * FROM {schema}.get_work(%s, %s, %s, %s)'.format(schema=self._schema), (self.name, max_jobs, psycopg2.Binary(worker_id), long(lease_time)))
                 for row in cursor:
                     wukey = bytes(row[0])
