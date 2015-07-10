@@ -38,17 +38,17 @@ CREATE TABLE IF NOT EXISTS {schema}.wu (
   finishtime bigint, -- int64 ms since 1970, or NULL
   worker bytea,
   PRIMARY KEY (spec, wukey));
-SELECT * INTO myrec FROM pg_catalog.pg_class c WHERE c.relname = 'wu_timeout';
+SELECT * INTO myrec FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid WHERE c.relname = 'wu_timeout' AND n.nspname = '{schema}';
 IF NOT FOUND THEN
-  CREATE INDEX wu_timeout ON wu (spec, timeout);
+  CREATE INDEX wu_timeout ON {schema}.wu (spec, timeout);
 END IF;
-SELECT * INTO myrec FROM pg_catalog.pg_class c WHERE c.relname = 'wu_status';
+SELECT * INTO myrec FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid WHERE c.relname = 'wu_status' AND n.nspname = '{schema}';
 IF NOT FOUND THEN
-  CREATE INDEX wu_status ON wu (spec, status);
+  CREATE INDEX wu_status ON {schema}.wu (spec, status);
 END IF;
-SELECT * INTO myrec FROM pg_catalog.pg_class c WHERE c.relname = 'wu_getwork';
+SELECT * INTO myrec FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid WHERE c.relname = 'wu_getwork' AND n.nspname = '{schema}';
 IF NOT FOUND THEN
-  CREATE INDEX wu_getwork ON wu (spec, prio DESC, wukey ASC);
+  CREATE INDEX wu_getwork ON {schema}.wu (spec, prio DESC, wukey ASC);
 END IF;
 CREATE TABLE IF NOT EXISTS {schema}.old_counts (
   spec varchar(100),
@@ -221,9 +221,45 @@ class PostgresWorkSpec(WorkSpec):
                     cursor.execute('DROP FUNCTION IF EXISTS {schema}.get_work(qspec varchar(100), nlim int, nworker bytea, expire_time bigint)'.format(schema=self._schema))
 
     def __getstate__(self):
-        raise NotImplementedError()
+        return (
+            'pws',
+            self.name,
+            self.data,
+            self.weight,
+            self.status,
+            self.continuous,
+            self.interval,
+            self.next_continuous,
+            self.max_running,
+            self.max_getwork,
+            self.next_work_spec,
+            self.next_work_spec_preempts,
+            self.connect_string,
+            self._schema,
+        )
     def __setstate__(self, state):
-        raise NotImplementedError()
+        assert state[0] == 'pws'
+        (
+            _,
+            self.name,
+            self.data,
+            self.weight,
+            self.status, # :5
+            self.continuous,
+            self.interval,
+            self.next_continuous,
+            self.max_running,
+            self.max_getwork, # :10
+            self.next_work_spec,
+            self.next_work_spec_preempts,
+            self.connect_string,
+            self._schema, # :14
+        ) = state[:14]
+        self.jobq = None
+        self.mutex = FifoLock()
+        self._connection_pool = None
+        self._dbinitted = False
+        self._lastexpire = None
 
     def _expire_stale_leases(self, cursor):
         # must run inside self.mutex and self._cursor()
@@ -294,6 +330,7 @@ class PostgresWorkSpec(WorkSpec):
                     cursor.execute('UPDATE {schema}.wu SET status = %s WHERE spec = %s AND wukey = %s'.format(schema=self._schema), (status, self.name, psycopg2.Binary(work_unit_key)))
                 if lease_time is not None:
                     cursor.execute('UPDATE {schema}.wu SET timeout = %s WHERE spec = %s AND wukey = %s'.format(schema=self._schema), (lease_time, self.name, psycopg2.Binary(work_unit_key)))
+        return True, None
 
     def prioritize_work_units(self, work_unit_keys, priority=None,
                               adjustment=None):
@@ -307,14 +344,110 @@ class PostgresWorkSpec(WorkSpec):
                     # adjustment
                     cursor.executemany('UPDATE {schema}.wu SET prio = prio + %s WHERE spec = %s AND wukey = %s'.format(schema=self._schema), [(adjustment, self.name, psycopg2.Binary(wuk)) for wuk in work_unit_keys])
 
-    def get_work_units(self, options):
-        raise NotImplementedError()
+    def _collect_wu_kdps(self, out, cursor):
+        # Common iteration over query results for _get_work_units_* below
+        for row in cursor:
+            key = bytes(row[0])
+            data = cbor.loads(bytes(row[1]))
+            prio = row[2]
+            status = row[3]
+            nwu = WorkUnit(key, data, priority=prio)
+            nwu.status = status
+            out.append( (key, nwu) )
+
+    def _get_work_units_by_keys(self, work_unit_keys):
+        # runs inside self.mutex
+        # return [(key, WorkUnit), ...], message
+        out = []
+        with self._cursor() as cursor:
+            for wuk in work_unit_keys:
+                # TODO: many queries is slow, make big query, but
+                # can't return results from cursor.executemany()
+                cursor.execute('SELECT wukey, wudata, prio, status FROM {schema}.wu WHERE spec = %s AND wukey = %s'.format(schema=self._schema), (self.name, psycopg2.Binary(wuk)))
+                self._collect_wu_kdps(out, cursor)
+        return out, None
+
+    def _get_work_units_by_states(self, states, start, limit):
+        # runs inside self.mutex
+        # return [(key, WorkUnit), ...], message
+        stateqtemplate = ' OR '.join(['status = %s'] * len(states))
+        query = 'SELECT wukey, wudata, prio, status FROM {schema}.wu WHERE spec = %s AND (' + stateqtemplate + ')'
+        args = [self.name]
+        args.extend(states)
+        if start is not None:
+            query += ' OFFSET %s'
+            args.append(start)
+        if limit is not None:
+            query += ' LIMIT %s'
+            args.append(limit)
+        out = []
+        with self._cursor() as cursor:
+            self._expire_stale_leases(cursor)
+            cursor.execute(query.format(schema=self._schema), args)
+            self._collect_wu_kdps(out, cursor)
+        return out, None
+
+    def _get_work_units_all(self, start, limit):
+        # runs inside self.mutex
+        # return [(key, WorkUnit), ...], message
+        out = []
+        with self._cursor() as cursor:
+            if start is not None:
+                if limit is not None:
+                    cursor.execute('SELECT wukey, wudata, prio, status FROM {schema}.wu WHERE spec = %s OFFSET %s LIMIT %s'.format(schema=self._schema), (self.name, start, limit))
+                else:
+                    cursor.execute('SELECT wukey, wudata, prio, status FROM {schema}.wu WHERE spec = %s OFFSET %s'.format(schema=self._schema), (self.name, start))
+            else:
+                if limit is not None:
+                    cursor.execute('SELECT wukey, wudata, prio, status FROM {schema}.wu WHERE spec = %s LIMIT %s'.format(schema=self._schema), (self.name, limit))
+                else:
+                    cursor.execute('SELECT wukey, wudata, prio, status FROM {schema}.wu WHERE spec = %s'.format(schema=self._schema), (self.name,))
+            self._collect_wu_kdps(out, cursor)
+        return out, None
 
     def del_work_units(self, options):
-        raise NotImplementedError()
+        # options={'all':True,
+        # work_unit_keys: [...],
+        # state: int}
+        # return (num deleted, msg)
+        with self.mutex:
+            with self._cursor() as cursor:
+                self._expire_stale_leases(cursor)
+                if options.get('all'):
+                    cursor.execute('DELETE FROM {schema}.wu'.format(schema=self._schema))
+                    return cursor.rowcount, None
+                xstate = options.get('state')
+                if xstate is not None:
+                    cursor.execute('DELETE FROM {schema}.wu WHERE status = %s'.format(schema=self._schema), (xstate,))
+                    return cursor.rowcount, None
+                wukeys = options.get('work_unit_keys')
+                if wukeys:
+                    cursor.executemany('DELETE FROM {schema}.wu WHERE wukey = %s'.format(schema=self._schema), [(psycopg2.Binary(key),) for key in wukeys])
+                    return cursor.rowcount, None
+                return 0, 'no valid option "all", "state", or "work_unit_keys"'
 
     def get_statuses(self, work_unit_keys):
-        raise NotImplementedError()
+        # return [{'status':int, 'expration':bigint, 'worker_id':, 'traceback':}, ...]
+        out = []
+        with self.mutex:
+            with self._cursor() as cursor:
+                self._expire_stale_leases(cursor)
+                for wuk in work_unit_keys:
+                    # TODO: many queries is slow, make big query, but
+                    # can't return results from cursor.executemany()
+                    cursor.execute('SELECT wudata, status, timeout, worker FROM {schema}.wu WHERE spec = %s AND wukey = %s'.format(schema=self._schema), (self.name, psycopg2.Binary(wuk)))
+                    for row in cursor:
+                        data = cbor.loads(bytes(row[0]))
+                        status = row[1]
+                        timeout = row[2]
+                        worker = row[3] and bytes(row[3])
+                        sdict = {'status': status, 'expration': timeout}
+                        if worker:
+                            sdict['worker_id'] = worker
+                        if 'traceback' in data:
+                            sdict['traceback'] = data['traceback']
+                        out.append(sdict)
+        return out
 
     def get_work(self, worker_id, lease_time, max_jobs):
         '''Get an available work unit from this work spec.
@@ -350,7 +483,9 @@ class PostgresWorkSpec(WorkSpec):
 
     def archive_work_units(self, max_count, max_age):
         '''Drop data of FINISHED and FAILED work units. Keep count of them.'''
-        # TODO: implement keeping a maximum count of records, currently only has cutoff time
+        if max_age is None:
+            logger.warn('TODO: implement keeping a maximum count of records, currently only has cutoff time')
+            return
         with self.mutex:
             with self._cursor() as cursor:
                 # things that finished before cutoff_time will be forgotten

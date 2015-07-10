@@ -362,6 +362,7 @@ class WorkSpec(object):
                 heapq.heapify(self.queue)
 
     def get_statuses(self, work_unit_keys):
+        # return [{'status':int, 'expration':bigint, 'worker_id':, 'traceback':}, ...]
         out = []
         with self.mutex:
             self._expire_stale_leases()
@@ -498,7 +499,7 @@ class WorkSpec(object):
         options={work_unit_keys=None, state=None, limit=None, start=None}
         options['state'] accepts either a single state or a list/tuple of states
 
-        return [(key, data), ...], message
+        return [(key, WorkUnit), ...], message
         '''
         work_unit_keys = options.get('work_unit_keys')
         states = options.get('state')
@@ -522,7 +523,7 @@ class WorkSpec(object):
             # otherwise, all work units
             return self._get_work_units_all(start, limit)
 
-    # overridden by SqliteWorkSpec
+    # overridden by SqliteWorkSpec, PostgresWorkSpec
     def _get_work_units_by_keys(self, work_unit_keys):
         # Note that if asked for specific keys, we don't
         # bother with 'limit' and just try to return
@@ -530,11 +531,11 @@ class WorkSpec(object):
         out = []
         for key in work_unit_keys:
             wu = self.work_units_by_key.get(key)
-            wu_data = ((wu is not None) and wu.data) or None
-            out.append( (key, wu_data) )
+            assert (wu is None) or wu.key == key
+            out.append( (key, wu) )
         return out, None
 
-    # overridden by SqliteWorkSpec
+    # overridden by SqliteWorkSpec, PostgresWorkSpec
     def _get_work_units_by_states(self, states, start, limit):
         # return WorkUnits filtered on set of states
         out = []
@@ -542,12 +543,12 @@ class WorkSpec(object):
         for wu in all_wu_of_state:
             if (start is not None) and (wu.key < start):
                 continue
-            out.append( (wu.key, wu.data) )
+            out.append( (wu.key, wu) )
             if (limit is not None) and (len(out) >= limit):
                 break
         return out, None
 
-    # overridden by SqliteWorkSpec
+    # overridden by SqliteWorkSpec, PostgresWorkSpec
     def _get_work_units_all(self, start, limit):
         out = []
         all_wu_keys = sorted(self.work_units_by_key.keys())
@@ -555,8 +556,7 @@ class WorkSpec(object):
             if (start is not None) and (wukey < start):
                 continue
             wu = self.work_units_by_key.get(wukey)
-            wu_data = ((wu is not None) and wu.data) or None
-            out.append( (wukey, wu_data) )
+            out.append( (wukey, wu) )
             if (limit is not None) and (len(out) >= limit):
                 break
         return out, None

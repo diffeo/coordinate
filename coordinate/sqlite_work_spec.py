@@ -189,15 +189,18 @@ class SqliteWorkSpec(WorkSpec):
         out = []
         for key in work_unit_keys:
             wu = self.work_units_by_key.get(key)
-            wu_data = None
             if wu is not None:
-                wu_data = wu.data
+                out.append( (key, wu) )
             else:
                 # try sqlite
                 prio_data = self.storage.get_work_unit_by_key(self.name, key)
                 if prio_data is not None:
+                    wu_prio = prio_data[0]
                     wu_data = prio_data[1]
-            out.append( (key, wu_data) )
+                    # new WU() defaults to AVAILABLE, which everything in sqlite is.
+                    out.append( (key, WorkUnit(key, wu_data, priority=wu_prio)) )
+                else:
+                    out.append( (key, None) )
         return out, None
 
     def _get_work_units_by_states(self, states, start, limit):
@@ -208,7 +211,8 @@ class SqliteWorkSpec(WorkSpec):
             # get more from sql
             more = limit - len(out)
             for kpd in self.storage.get_work_units(self.name, more):
-                out.append( (kpd[0], kpd[2]) )
+                key, prio, data = kpd
+                out.append( (key, WorkUnit(key, data, priority=prio)) )
         return out, None
 
     def _get_work_units_all(self, start, limit):
@@ -219,7 +223,8 @@ class SqliteWorkSpec(WorkSpec):
             # get more from sql
             more = limit - len(out)
             for kpd in self.storage.get_work_units_start(self.name, start, more):
-                out.append( (kpd[0], kpd[2]) )
+                key, prio, data = kpd
+                out.append( (key, WorkUnit(key, data, priority=prio)) )
         return out, None
 
 ## If we never update a work unit in the AVAILABLE queue, this is fine

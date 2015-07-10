@@ -256,6 +256,8 @@ class JobQueue(object):
         if self.sqlite_path:
             self.storage = SqliteJobStorage(self.sqlite_path)
 
+        self.postgres_connect_string = self._cfget('postgres_connect')
+
         if self.do_recover:
             # sadly, work that kinda doesn't make sense except in the
             # constructor. ew. gross.
@@ -282,6 +284,8 @@ class JobQueue(object):
         'limit_completed_age': None,
         'joblog': False,  # noisy cpu intense log. enable for debugging.
         'sqlite_path': None,  # sqlite storage for large queues
+        'postgres_connect': None, # 'host= user= dbname= password='
+        'postgres_schema': 'public', # mostly for unit tests
     }
 
     def _cfget(self, name):
@@ -440,6 +444,8 @@ class JobQueue(object):
                     if self.storage:
                         ws = SqliteWorkSpec.__new__(SqliteWorkSpec)
                         ws.storage = self.storage
+                    elif self.postgres_connect_string:
+                        ws = PostgresWorkSpec.__new__(PostgresWorkSpec)
                     else:
                         ws = WorkSpec.__new__(WorkSpec)
                     ws._cbor_load(stream)
@@ -595,6 +601,8 @@ class JobQueue(object):
             if ws is None:
                 if self.storage:
                     ws = SqliteWorkSpec.from_dict(work_spec, self, storage=self.storage)
+                elif self.postgres_connect_string:
+                    ws = PostgresWorkSpec.from_dict(work_spec, self, connect_string=self.postgres_connect_string, schema=self._cfget('postgres_schema'))
                 else:
                     ws = WorkSpec.from_dict(work_spec, self)
                 self.work_specs[name] = ws
@@ -777,7 +785,11 @@ class JobQueue(object):
         ws = self.work_specs.get(work_spec_name)
         if ws is None:
             return None, 'no such work_spec {!r}'.format(work_spec_name)
-        return ws.get_work_units(options)
+        wul, msg = ws.get_work_units(options)
+        if msg is not None:
+            return [], msg
+        # TODO: return prio and status
+        return [(x[0], x[1] and x[1].data) for x in wul], None
 
     def prioritize_work_units(self, work_spec_name, options):
         '''Move some work items to the top of the queue.
@@ -880,8 +892,14 @@ class JobQueue(object):
             return False, 'no such work_spec {!r}'.format(work_spec_name)
         ok, msg = ws.update_work_unit(work_unit_key, options)
         if ok:
-            # This *must* exist for us to get here
-            wu = ws.work_units_by_key[work_unit_key]
+            wul, msg = ws._get_work_units_by_keys([work_unit_key])
+            if msg is not None:
+                return False, msg
+            if not wul:
+                return False, '(a) no work unit with key={!r}'.format(work_unit_key)
+            wu = wul[0][1]
+            if not wu:
+                return False, '(b) no work unit with key={!r}'.format(work_unit_key)
             if wu.status == FINISHED or wu.status == FAILED:
                 # It's done; who was working on it?
                 worker = self.workers.workers.get(wu.worker_id)
