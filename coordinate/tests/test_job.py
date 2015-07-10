@@ -1,6 +1,7 @@
 from __future__ import absolute_import
 from collections import Counter
 import logging
+import os
 import random
 import time
 
@@ -9,6 +10,7 @@ from StringIO import StringIO
 
 import pytest
 import yakonfig
+import yaml
 
 import coordinate
 import coordinate.job_server
@@ -24,6 +26,13 @@ logger = logging.getLogger(__name__)
 wu1v = {'wu1v':1}
 wu2v = {'wu2v':2}
 wu3v = {'wu3v':3}
+
+
+try:
+    connect_string = open(os.path.join(os.path.dirname(__file__), 'postgres_connect_string.txt'), 'rb').read().strip()
+except:
+    connect_string = None
+
 
 @pytest.yield_fixture
 def xconfig():
@@ -57,7 +66,7 @@ def _make_SqliteWorkSpec(*args, **kwargs):
 def pwsfactory(random_schema):
     def ff(*args, **kwargs):
         return PostgresWorkSpec(
-            connect_string='host=127.0.0.1 user=test dbname=test password=test',
+            connect_string=connect_string,
             schema=random_schema,
             *args, **kwargs)
     return ff
@@ -65,6 +74,9 @@ def pwsfactory(random_schema):
 @pytest.yield_fixture(params=[_make_WorkSpec, _make_SqliteWorkSpec, 'PostgresWorkSpec'], scope='function')
 def work_spec_class(request, random_schema):
     if request.param == 'PostgresWorkSpec':
+        if not connect_string:
+            pytest.skip()
+            return
         pf = pwsfactory(random_schema)
         yield pf
         ws = pf('', None)

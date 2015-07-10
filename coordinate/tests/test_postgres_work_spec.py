@@ -13,14 +13,14 @@ from coordinate.constants import AVAILABLE, PENDING, FINISHED, \
     RUNNABLE, PAUSED
 from coordinate.job_server import SqliteWorkSpec, WorkUnit, JobQueue
 from coordinate.postgres_work_spec import PostgresWorkSpec
-from coordinate.tests.test_job import xconfig, NonClosingStringIO, wu1v, wu2v, wu3v, random_schema
+from coordinate.tests.test_job import xconfig, NonClosingStringIO, wu1v, wu2v, wu3v, random_schema, connect_string
 
 logger = logging.getLogger(__name__)
 
 
 @pytest.yield_fixture(scope='function')
 def jqconfig(random_schema):
-    c = {'postgres_connect': 'host=127.0.0.1 user=test dbname=test password=test', 'postgres_schema': random_schema}
+    c = {'postgres_connect': connect_string, 'postgres_schema': random_schema}
     yield c
     ws = PostgresWorkSpec('', None, connect_string=c['postgres_connect'], schema=random_schema)
     ws.delete_all_storage()
