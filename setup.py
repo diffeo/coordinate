@@ -143,6 +143,7 @@ setup(
         'pyyaml',
         'setproctitle',
         'yakonfig',
+        'psycopg2', # not generally necessary, comment out if you don't want it
     ],
     extras_require = {
         'jinja': [  # used for http info serving
