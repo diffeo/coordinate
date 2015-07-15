@@ -1,7 +1,8 @@
-#!python
-'''
+'''Global constants for :mod:`coordinate`.
+
 .. This software is released under an MIT/X11 open source license.
-   Copyright 2012-2014 Diffeo, Inc.
+   Copyright 2012-2015 Diffeo, Inc.
+
 '''
 
 # work unit states

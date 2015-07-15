@@ -11,7 +11,7 @@ The implementations in this module contain the most common use
 patterns for :mod:`coordinate`.
 
 .. This software is released under an MIT/X11 open source license.
-   Copyright 2012-2014 Diffeo, Inc.
+   Copyright 2012-2015 Diffeo, Inc.
 
 .. autoclass:: WorkUnit
    :members:
@@ -461,7 +461,7 @@ class TaskMaster(CborRpcClient):
 
         This is compatible with :class:`coordinate.TaskMaster`.
 
-        .. see:: :meth:`get_work_units`
+        .. seealso:: :meth:`get_work_units`
 
         '''
         return self._list_work_units(work_spec_name, start, limit,
@@ -518,12 +518,17 @@ class TaskMaster(CborRpcClient):
         in the list is :const:`None`.  If the work spec is undefined
         then the return value of the function is :const:`None`.
 
-        Status returned is a dict = {
-          'status': int constant TaskMaster.{AVAILABLE,PENDING,BLOCKED,FAILED,FINISHED},
-          'expiration': time number,
-          'worker_id': worker id string if leased,
-          'traceback': error traceback if failed,
-        }
+        Status returned is a dict with string keys:
+
+        `status`
+          An integer constant, one of :attr:`AVAILABLE`, :attr:`PENDING`,
+          :attr:`BLOCKED`, :attr:`FAILED`, or :attr:`FINISHED`
+        `expiration`
+          Time number, in seconds since the Unix epoch
+        `worker_id`
+          Worker ID string if leased
+        `traceback`
+          Error traceback if failed
 
         :param str work_spec_name: name of the work spec
         :param list work_unit_keys: names of keys to retrieve
@@ -752,16 +757,22 @@ class TaskMaster(CborRpcClient):
         passed without it heartbeating, this will return an empty
         dictionary.
 
-        worker state dict = {
-         'worker_id': str,
-         'host': str,
-         'fqdn': str,
-         'version': str, # version of coordinate package
-         'working_set': [from pkg_resources],
-         'memory': from psutil,
-         # how long since server heard from this worker.
-         'age_seconds': int,
-        }
+        The return value is a dictionary with string keys:
+
+        `worker_id`
+          String containing `worker_id`
+        `host`
+          String with the worker's host name
+        `fqdn`
+          String with the worker's fully-qualified domain name
+        `version`
+          String with the :mod:`coordinate` package version
+        `working_set`
+          List of installed packages from :mod:`pkg_resources`
+        `memory`
+          Float
+        `age_seconds`
+          Integer time since the server last heard from this worker
 
         :param str worker_id: worker ID
         :return: dictionary of worker state, or empty dictionary
