@@ -969,8 +969,11 @@ class JobQueue(object):
         while True:
             spec = self.scheduler.choose_work_spec(valid)
             if spec is None:
-                return ((None, None, None),
-                        'no work specs with available work')
+                if max_jobs == 1:
+                    empty_return = (None, None, None)
+                else:
+                    empty_return = []
+                return (empty_return, 'no work specs with available work')
             ws = self.work_specs[spec]
             work_units = ws.get_work(worker_id, lease_time, max_jobs)
             if not work_units:
