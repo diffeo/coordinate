@@ -17,11 +17,6 @@ import sys
 import threading
 import time
 
-# try:
-#     import cPickle as pickle
-# except ImportError:
-#     import pickle
-
 import cbor
 import yakonfig
 
@@ -245,7 +240,10 @@ class JobQueue(object):
         self.mutex = FifoLock()
         self.scheduler = WorkSpecScheduler(self.work_specs)
 
-        self.config = config or yakonfig.get_global_config('coordinate', 'job_queue')
+        self.config = config
+        if self.config is None:
+            self.config = yakonfig.get_global_config('coordinate',
+                                                     'job_queue')
 
         self.workers = WorkerPool()
 
@@ -302,8 +300,8 @@ class JobQueue(object):
         'limit_completed_age': None,
         'joblog': False,  # noisy cpu intense log. enable for debugging.
         'sqlite_path': None,  # sqlite storage for large queues
-        'postgres_connect': None, # 'host= user= dbname= password='
-        'postgres_schema': 'public', # mostly for unit tests
+        'postgres_connect': None,  # 'host= user= dbname= password='
+        'postgres_schema': 'public',  # mostly for unit tests
     }
 
     def _cfget(self, name):
@@ -315,13 +313,15 @@ class JobQueue(object):
         try:
             self._snapshotter_loop()
         except:
-            logger.error('snapshotter thread erroring out. not safe to continue', exc_info=True)
+            logger.critical('snapshotter thread erroring out. '
+                            'not safe to continue', exc_info=True)
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(2)
             sys.exit(1)
 
     def _snapshotter_loop(self):
-        while (self.snapshot_path_format is not None) and (self.snapshot_period_seconds is not None):
+        while ((self.snapshot_path_format is not None) and
+               (self.snapshot_period_seconds is not None)):
             did_snapshot = False
             last_exception = None
             try:
@@ -339,7 +339,8 @@ class JobQueue(object):
                     if last_exception is not None:
                         raise last_exception
                     else:
-                        raise Exception('{} failed snapshots. fail out'.format(self.snapshot_error_count))
+                        raise Exception('{} failed snapshots. fail out'
+                                        .format(self.snapshot_error_count))
 
             if did_snapshot:
                 # wait a full period
@@ -366,7 +367,6 @@ class JobQueue(object):
         now = time.time()
         if (self.last_snapshot_time + self.snapshot_period_seconds) < now:
             self.snapshot()
-            endtime = time.time()
             self.last_snapshot_time = now
             return True
 
@@ -388,38 +388,30 @@ class JobQueue(object):
             dotmd5fd.write(fout.hexdigest())
             dotmd5fd.write('\n')
         end_time = time.time()
-        logger.info('wrote snapshot to %r in %s seconds', snap_path, end_time - start_time)
+        logger.info('wrote snapshot to %r in %s seconds',
+                    snap_path, end_time - start_time)
 
         if self.storage:
             self.storage.vacuum()
 
         self.old_snapshot_paths.append(snap_path)
-        logger.info('dsb %s old snap paths %r', self.delete_snapshots_beyond, self.old_snapshot_paths)
-        while self.delete_snapshots_beyond and (len(self.old_snapshot_paths) > self.delete_snapshots_beyond):
+        while (self.delete_snapshots_beyond and
+               (len(self.old_snapshot_paths) >
+                self.delete_snapshots_beyond)):
             old_snap_path = self.old_snapshot_paths.pop(0)
             logger.info('deleting old snapshot %r', old_snap_path)
             try:
                 if os.path.exists(old_snap_path + '.md5'):
                     os.remove(old_snap_path + '.md5')
                 os.remove(old_snap_path)
-            except:
-                logger.error('failed trying to remove old snapshot %r', old_snap_path, exc_info=True)
+            except Exception:
+                logger.error('failed trying to remove old snapshot %r',
+                             old_snap_path, exc_info=True)
                 return
 
     def _snapshot(self, fout, snap_path=None):
         self.archive()
-#        self._snapshot_pickle(fout, snap_path)
         self._snapshot_cbor(fout, snap_path)
-
-    # def _snapshot_pickle(self, fout, snap_path=None):
-    #     # TODO: delete. deprecated.
-    #     with self.mutex:
-    #         ws_subpickles = dict([
-    #             (name_ws[0], name_ws[1]._pickle()) for name_ws in self.work_specs.iteritems()
-    #         ])
-    #         self._close_logfile()
-    #         self._dirty = False
-    #     return pickle.dump(ws_subpickles, fout, protocol=pickle.HIGHEST_PROTOCOL)
 
     def _snapshot_cbor(self, fout, snap_path=None):
         with self.mutex:
@@ -432,7 +424,8 @@ class JobQueue(object):
         if self.logfile is not None:
             lf = self.logfile
             self.logfile = None
-            # TODO: some closing record into the logfile to signify that it is complete and whole
+            # TODO: some closing record into the logfile to signify that
+            # it is complete and whole
             closer_thread = threading.Thread(target=lf.close)
             closer_thread.start()
 
@@ -442,18 +435,8 @@ class JobQueue(object):
                 raise Exception('need stream or snap_path to load_snapshot()')
             stream = zopen(snap_path)
         assert stream is not None
-        #self._load_snapshot_pickled(stream)
         self._load_snapshot_cbor(stream)
         self.scheduler.update()
-
-    # def _load_snapshot_pickled(self, stream):
-    #     # TODO: delete. deprecated.
-    #     ws_subpickles = pickle.load(stream)
-    #     with self.mutex:
-    #         for name, subpickle in ws_subpickles.iteritems():
-    #             ws = pickle.loads(subpickle)
-    #             ws.jobq = self
-    #             self.work_specs[name] = ws
 
     def _load_snapshot_cbor(self, stream):
         with self.mutex:
@@ -481,26 +464,26 @@ class JobQueue(object):
             return
         if self.logfile is None:
             if self.log_path_format is not None:
-                next_logpath = self.log_path_format.format(timestamp=timestamp())
+                next_logpath = self.log_path_format.format(
+                    timestamp=timestamp())
                 self.logfile = zopenw(next_logpath)
         if self.logfile is not None:
             cbor.dump((action, args), self.logfile)
 
     def _run_log(self, logf, error_limit=0):
         errcount = 0
-        #errlist = []
         for ob in _cbor_load_iter(logf):
             logger.debug('action log: %r', ob)
             action, args = ob
             try:
                 self._run_log_action(action, args)
-            except Exception as e:
+            except Exception:
                 errcount += 1
                 if errcount > error_limit:
                     raise
                 else:
-                    logger.error('log replay error, but continuing', exc_info=True)
-                    #errlist.append(e)
+                    logger.error('log replay error, but continuing',
+                                 exc_info=True)
 
     def _run_log_action(self, action, args):
         log_disabled_stack = self.log_disabled
@@ -521,7 +504,8 @@ class JobQueue(object):
                 work_spec_name, options = args
                 self.del_work_units(work_spec_name, options)
             else:
-                raise Exception('uknnown log entry action {!r}, args={!r}'.format(action, args))
+                raise Exception('uknnown log entry action {!r}, args={!r}'
+                                .format(action, args))
         finally:
             self.log_disabled = log_disabled_stack
 
@@ -529,9 +513,11 @@ class JobQueue(object):
         # try to find the latest snapshot, and any log files after it, and load
         if self.snapshot_path_format is not None:
             start_time = time.time()
-            globpat = self.snapshot_path_format.format(timestamp=_TIMESTAMP_GLOB)
+            globpat = self.snapshot_path_format.format(
+                timestamp=_TIMESTAMP_GLOB)
             self.old_snapshot_paths = sorted(glob.glob(globpat))
-            logger.debug('found snapshots: %r, (from %r)', self.old_snapshot_paths, globpat)
+            logger.debug('found snapshots: %r, (from %r)',
+                         self.old_snapshot_paths, globpat)
             if not self.old_snapshot_paths:
                 return
             by_mtime = []
@@ -542,9 +528,10 @@ class JobQueue(object):
                     continue
                 try:
                     mtime = os.path.getmtime(snap_path)
-                    by_mtime.append( (mtime, snap_path) )
-                except:
-                    logger.info('failed getting mtime for %r', snap_path, exc_info=True)
+                    by_mtime.append((mtime, snap_path))
+                except Exception:
+                    logger.debug('failed getting mtime for %r',
+                                 snap_path, exc_info=True)
                     # meh, drop it
             # highest mtime (newest) first
             by_mtime.sort(reverse=True)
@@ -571,19 +558,22 @@ class JobQueue(object):
                         break
                     inhash.update(data)
                 if md5str != inhash.hexdigest():
-                    logger.error('md5 hash mismatch .md5 %s != %s', md5str, inhash.hexdigest())
+                    logger.error('md5 hash mismatch .md5 %s != %s',
+                                 md5str, inhash.hexdigest())
                     continue
 
                 # else, okay, go with this mtime,snap_path
                 try:
                     self.load_snapshot(snap_path=snap_path)
                     end_time = time.time()
-                    logger.info('loaded snapshot in %s sec from %r', end_time - start_time, snap_path)
+                    logger.info('loaded snapshot in %s sec from %r',
+                                end_time - start_time, snap_path)
                     # done. return.
                     # TODO: load log files after the snapshot and apply them.
                     return
                 except:
-                    logger.error('failed loading snapshot %r', snap_path, exc_info=True)
+                    logger.error('failed loading snapshot %r',
+                                 snap_path, exc_info=True)
 
             logger.info('no snapshot successfully loaded')
 
@@ -618,9 +608,13 @@ class JobQueue(object):
             ws = self.work_specs.get(name)
             if ws is None:
                 if self.storage:
-                    ws = SqliteWorkSpec.from_dict(work_spec, self, storage=self.storage)
+                    ws = SqliteWorkSpec.from_dict(
+                        work_spec, self, storage=self.storage)
                 elif self.postgres_connect_string:
-                    ws = PostgresWorkSpec.from_dict(work_spec, self, connect_string=self.postgres_connect_string, schema=self._cfget('postgres_schema'))
+                    ws = PostgresWorkSpec.from_dict(
+                        work_spec, self,
+                        connect_string=self.postgres_connect_string,
+                        schema=self._cfget('postgres_schema'))
                 else:
                     ws = WorkSpec.from_dict(work_spec, self)
                 self.work_specs[name] = ws
@@ -740,7 +734,7 @@ class JobQueue(object):
             delcount = 0
             for work_spec_name, ws in oldspecs.iteritems():
                 delcount += 1
-                ws.del_work_units({'all':True})
+                ws.del_work_units({'all': True})
             self.scheduler.update()
             return delcount
 
@@ -750,7 +744,7 @@ class JobQueue(object):
             self._log_action('del_work_spec', (work_spec_name,))
             oldws = self.work_specs.get(work_spec_name)
             if oldws is not None:
-                oldws.del_work_units({'all':True})
+                oldws.del_work_units({'all': True})
                 del self.work_specs[work_spec_name]
                 self.scheduler.update()
                 return True, None
@@ -994,7 +988,7 @@ class JobQueue(object):
                     empty_return = (None, None, None)
                 else:
                     empty_return = []
-                return (empty_return, 'no work specs with available work')
+                return (empty_return, None)
             ws = self.work_specs[spec]
             work_units = ws.get_work(worker_id, lease_time, max_jobs)
             if not work_units:
@@ -1010,7 +1004,8 @@ class JobQueue(object):
                 wu = work_units[0]
                 return ((ws.name, wu.key, wu.data), None)
             else:
-                return ([(ws.name, wu.key, wu.data) for wu in work_units], None)
+                return ([(ws.name, wu.key, wu.data) for wu in work_units],
+                        None)
 
     def get_child_work_units(self, worker_id):
         '''Get work units assigned to a worker's children.
@@ -1205,7 +1200,12 @@ class WorkSpecScheduler(object):
         # path necessarily starts from a source.  Build paths
         # as a dictionary from the most-downstream node.
         self.paths = []
-        pathq = dict([(name, (((name not in self.continuous) and [name]) or [])) for name in self.sources])
+        pathq = {}
+        for name in self.sources:
+            if name in self.continuous:
+                pathq[name] = []
+            else:
+                pathq[name] = [name]
         while pathq:
             name, path = pathq.popitem()
             spec = self.work_specs[name]
@@ -1306,7 +1306,9 @@ class WorkSpecScheduler(object):
         min_l = None
 
         # super noisy debug of what all the scheduler options are
-        # logger.debug('%r', [(name, ws.num_pending(), ws.weight, (1 + ws.num_pending()) / ws.weight) for name,ws in self.work_specs.iteritems()])
+        # logger.debug('%r', [(name, ws.num_pending(), ws.weight,
+        #                     (1 + ws.num_pending()) / ws.weight)
+        #                     for name, ws in self.work_specs.iteritems()])
 
         for l in list_of_lists:
             lscore = None
@@ -1327,7 +1329,8 @@ class WorkSpecScheduler(object):
                     min_l = None
                 scores[name] = spec_score
                 lscore = nmin(lscore, spec_score)
-            if (min_lscore is None) or ((lscore is not None) and (lscore < min_lscore)):
+            if (((min_lscore is None) or
+                 ((lscore is not None) and (lscore < min_lscore)))):
                 min_lscore = lscore
                 min_l = l
 
@@ -1350,7 +1353,8 @@ class WorkSpecScheduler(object):
                 if prev_defers or (min_score is None) or (ns < min_score):
                     min_score = nmin(ns, min_score)
                     min_name = name
-            prev_defers = pick_last and self.work_specs[name].next_work_spec_preempts
+            prev_defers = (pick_last and
+                           self.work_specs[name].next_work_spec_preempts)
         return min_name or last_usable
 
 

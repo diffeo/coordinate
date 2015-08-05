@@ -46,7 +46,6 @@ MAX_LEASE_SECONDS = (24 * 3600)
 MIN_LEASE_SECONDS = 10
 
 
-
 class WorkUnit(object):
     '''Client-side implementation of a single unit of work.
 
@@ -175,7 +174,8 @@ class TaskMaster(CborRpcClient):
 
         '''
         if 'name' not in work_spec:
-            raise ProgrammerError('work_spec lacks "name"\n' + yaml.dump(work_spec))
+            raise ProgrammerError('work_spec lacks "name"\n' +
+                                  yaml.dump(work_spec))
         if 'min_gb' not in work_spec or \
                 not isinstance(work_spec['min_gb'], (float, int, long)):
             raise ProgrammerError('work_spec["min_gb"] must be a number')
@@ -582,12 +582,20 @@ class TaskMaster(CborRpcClient):
                  work_spec_names=None, max_jobs=1):
         '''Get one or more WorkUnit for this client to work on.
 
+        If there is no work to do, returns :const:`None`.  Otherwise, if
+        `max_jobs` is exactly 1, returns the single :class:`WorkUnit`
+        object; and otherwise returns a list of :class:`WorkUnit`.  In
+        this last case the worker owns a lease on all of the work units
+        until the `lease_time` expires.
+
         :param str worker_id: worker ID that is doing work
         :param int available_gb: maximum memory size for the job
         :param int lease_time: requested time to do the job
         :param int max_jobs: maximum number of work units to return (default 1)
         :param list work_spec_names: only consider these work specs
-        :return: a single :class:`WorkUnit` if max_jobs is 1 or a list of :class:`WorkUnit`, or :const:`None` if there is no (eligible) work to do
+        :return: a single :class:`WorkUnit` if max_jobs is 1; or a list
+           of :class:`WorkUnit`; or :const:`None` if there is no
+           (eligible) work to do
 
         '''
         options = {}
@@ -604,12 +612,14 @@ class TaskMaster(CborRpcClient):
         if work_spec_names is not None:
             options['work_spec_names'] = work_spec_names
         if available_gb is not None:
-            if not isinstance(available_gb, (int,long,float)):
-                raise ValueError('available_gb must be a number, got %s'.format(type(max_jobs)))
+            if not isinstance(available_gb, (int, long, float)):
+                raise ValueError('available_gb must be a number, got {0!r}'
+                                 .format(type(max_jobs)))
             options['available_gb'] = available_gb
         if max_jobs is not None:
-            if not isinstance(max_jobs, (int,long)):
-                raise ValueError('max_jobs must be int or long, got %s'.format(type(max_jobs)))
+            if not isinstance(max_jobs, (int, long)):
+                raise ValueError('max_jobs must be int or long, got {0!r}'
+                                 .format(type(max_jobs)))
             options['max_jobs'] = max_jobs
         keydata, message = self._rpc('get_work', (worker_id, options))
         if message:
@@ -618,11 +628,12 @@ class TaskMaster(CborRpcClient):
             if (keydata[0] is None) or (keydata[1] is None):
                 return None
             # TODO: get lease timeout back from server?
-            return WorkUnit(self, keydata[0], keydata[1], keydata[2], worker_id,
-                            default_lease_time=lease_time)
+            return WorkUnit(self, keydata[0], keydata[1], keydata[2],
+                            worker_id, default_lease_time=lease_time)
         else:
-            logger.info(keydata)
-            return [WorkUnit(self, kd[0], kd[1], kd[2], worker_id, default_lease_time=lease_time) for kd in keydata]
+            return [WorkUnit(self, kd[0], kd[1], kd[2], worker_id,
+                             default_lease_time=lease_time)
+                    for kd in keydata]
 
     def retry(self, work_spec_name, *work_unit_names):
         '''Move work units back into the available queue.
@@ -677,7 +688,7 @@ class TaskMaster(CborRpcClient):
 
     def set_mode(self, mode):
         '''Do nothing.
-        
+
         TODO: Delete. This was relevant to an early version of the API.
         '''
         pass
