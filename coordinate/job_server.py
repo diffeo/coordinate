@@ -1,10 +1,10 @@
 '''python server logic for coordinate daemon
 
-.. Your use of this software is governed by your license agreement.
+.. This software is released under an MIT/X11 open source license.
    Copyright 2012-2015 Diffeo, Inc.
+
 '''
-from __future__ import absolute_import
-from __future__ import division
+from __future__ import absolute_import, division, print_function
 import collections
 import glob
 import hashlib
@@ -27,10 +27,8 @@ import yakonfig
 
 # special improved version of standard library's heapq
 from coordinate import heapq
-from .constants import AVAILABLE, FINISHED, FAILED, PENDING, \
-    WORK_UNIT_STATUS_NAMES_BY_NUMBER, \
-    RUNNABLE, PAUSED, \
-    PRI_GENERATED, PRI_STANDARD, \
+from .constants import FINISHED, FAILED, \
+    RUNNABLE, \
     MAX_LEASE_SECONDS, MIN_LEASE_SECONDS, DEFAULT_LEASE_SECONDS
 from .fifolock import FifoLock
 from .job_sqlite import SqliteJobStorage
@@ -59,19 +57,29 @@ _TIMESTAMP_GLOB = '????????_??????.???'
 
 
 class Worker(object):
-    '''
-    record of some client doing work with this job server
+    '''Record of some client doing work with this job server.
+
+    Each worker has a distinct :attr:`worker_id`, and may be working
+    on any number of work units associated with a single work spec.
+
     '''
     def __init__(self, worker_id, mode, expire_time, data, parent):
-        # expire_time should be absolute time
+        #: Unique string identifier of this worker.
         self.worker_id = worker_id
+        #: Last reported global mode from this worker.
         self.mode = mode
+        #: Time (Unix seconds) of last heartbeat.
         self.last_heard_from = time.time()
+        #: Time (Unix seconds) when this record will be deleted.
         self.expire_time = expire_time
+        #: Content of last heartbeat.
         self.data = data
+        #: Unique string identifier of this worker's parent, if any.
         self.parent = parent
+        #: :class:`WorkSpec` this worker is running, if any.
         self.work_spec = None
-        self.work_unit = None
+        #: Set of work units this worker is running.
+        self.work_units = set()
 
     def __lt__(self, other):
         "used by heapq -- smallest item is first in queue"
@@ -193,28 +201,38 @@ class WorkerPool(object):
             return out, None
 
     def get_child_work_units(self, worker_id):
+        '''Get work units being worked on by children of a worker.
+
+        The return value is a dictionary where the keys are the child
+        worker IDs and the values are the lists of work units being
+        performed by those workers.  There may be multiple work units
+        in the list if :meth:`JobQueue.get_work` was called to
+        retrieve more than one work unit at a time.
+
+        Each of the inner work units in turn is a dictionary with
+        keys `work_spec_name`, `work_unit_key`, `work_unit_data`,
+        `worker_id`, and `expires`.  Normally all of the work units
+        will have the same work spec and will belong to the expected
+        worker.
+
+        '''
         "returns {child worker id: [{work unit data}, ...]"
         result = {}
         with self.mutex:
             for child in self.children[worker_id]:
                 worker = self.workers.get(child)
                 if worker:
-                    # Record this work unit; but skip it if it
-                    # is owned by the current worker and it is done
-                    if not worker.work_unit:
-                        result[child] = None
-                    else:
-                        result[child] = [
-                            {
-                                'work_spec_name': worker.work_spec.name,
-                                'work_unit_key': work_unit.key,
-                                'work_unit_data': work_unit.data,
-                                'worker_id': work_unit.worker_id,
-                                'expires': work_unit.lease_time,
-                            }
-                            for work_unit in worker.work_unit
-                        ]
-        return result, None
+                    result[child] = [
+                        {
+                            'work_spec_name': worker.work_spec.name,
+                            'work_unit_key': work_unit.key,
+                            'work_unit_data': work_unit.data,
+                            'worker_id': work_unit.worker_id,
+                            'expires': work_unit.lease_time,
+                        }
+                        for work_unit in worker.work_units
+                    ]
+        return result
 
 
 class JobQueue(object):
@@ -896,21 +914,24 @@ class JobQueue(object):
             if msg is not None:
                 return False, msg
             if not wul:
-                return False, '(a) no work unit with key={!r}'.format(work_unit_key)
+                return (False,
+                        '(a) no work unit with key={!r}'
+                        .format(work_unit_key))
             wu = wul[0][1]
             if not wu:
-                return False, '(b) no work unit with key={!r}'.format(work_unit_key)
+                return (False,
+                        '(b) no work unit with key={!r}'
+                        .format(work_unit_key))
             if wu.status == FINISHED or wu.status == FAILED:
                 # It's done; who was working on it?
                 worker = self.workers.workers.get(wu.worker_id)
                 if ((worker and
                      worker.work_spec is ws and
-                     worker.work_unit and
-                     (wu in worker.work_unit)
-                 )):
+                     wu in worker.work_units)):
                     # Okay, we've finished the job.  Awesome.
-                    worker.work_spec = None
-                    worker.work_unit = None
+                    worker.work_units.discard(wu)
+                    if not worker.work_units:
+                        worker.work_spec = None
         return (ok, msg)
 
     def get_work(self, worker_id, options):
@@ -955,11 +976,11 @@ class JobQueue(object):
         if worker is None:
             # some test code doesn't worker_heartbeat before diving in
             pass
-        elif worker.work_unit:
+        elif worker.work_units:
             logger.warn('worker %s is already working on work spec '
-                        '%s work unit %s',
-                        worker_id, [x.key for x in worker.work_unit],
-                        worker.work_spec.name)
+                        '%r work units %r',
+                        worker_id, worker.work_spec.name,
+                        [wu.key for wu in worker.work_units])
 
         def valid(spec):
             if work_spec_names and spec.name not in work_spec_names:
@@ -983,7 +1004,7 @@ class JobQueue(object):
                 continue
             if worker is not None:
                 worker.work_spec = ws
-                worker.work_unit = work_units
+                worker.work_units.update(set(work_units))
             if max_jobs == 1:
                 # old style single return
                 wu = work_units[0]
@@ -1000,10 +1021,11 @@ class JobQueue(object):
         to lists of work unit metadata dictionaries.  Each of the inner
         dictionaries has keys ``work_spec_name``, ``work_unit_key``,
         ``work_unit_data``, ``worker_id``, and ``expires``, which
-        can be used to reconstruct the work unit client-side.
+        can be used to reconstruct the work units client-side.
 
         '''
-        return self.workers.get_child_work_units(worker_id)
+        result = self.workers.get_child_work_units(worker_id)
+        return result, None
 
     def worker_heartbeat(self, worker_id, mode, expire_seconds, data, parent):
         return self.workers.update(worker_id, mode, expire_seconds, data,

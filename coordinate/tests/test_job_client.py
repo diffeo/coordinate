@@ -1,4 +1,10 @@
-from __future__ import absolute_import
+'''Unit tests for :mod:`coordinate.job_client`.
+
+.. This software is released under an MIT/X11 open source license.
+   Copyright 2012-2015 Diffeo, Inc.
+
+'''
+from __future__ import absolute_import, division, print_function
 
 import pytest
 
@@ -156,8 +162,8 @@ def test_pause(task_master, work_spec):
     task_master.add_work_units(work_spec['name'], [('u', {'k': 'v'})])
     assert (task_master.get_work_units(work_spec['name']) ==
             [('u', {'k': 'v'})])
-    assert (task_master.get_work_unit_status(work_spec['name'], ['u'])[0]['status'] ==
-            AVAILABLE)
+    assert (task_master.get_work_unit_status(work_spec['name'], ['u'])
+            [0]['status'] == AVAILABLE)
 
     task_master.pause_work_spec(work_spec['name'], paused=True)
     wu = task_master.get_work('test', available_gb=1)
@@ -168,16 +174,21 @@ def test_pause(task_master, work_spec):
     assert wu.work_spec_name == work_spec['name']
     assert wu.key == 'u'
 
+
 def test_get_many(task_master, work_spec):
     task_master.set_work_spec(work_spec)
     task_master.add_work_units(
         work_spec['name'],
         [
-            ('u{:03d}'.format(x), {'k': 'v{}'.format(x)}) for x in xrange(1,100)
+            ('u{:03d}'.format(x), {'k': 'v{}'.format(x)})
+            for x in xrange(1, 100)
         ])
-    wus = task_master.get_work('test', available_gb=1, lease_time=300, max_jobs=10)
+    wus = task_master.get_work('test', available_gb=1, lease_time=300,
+                               max_jobs=10)
     assert len(wus) == 10
-    assert [wu.key for wu in wus] == ['u{:03d}'.format(x) for x in xrange(1,11)]
+    assert [wu.key for wu in wus] == ['u{:03d}'.format(x)
+                                      for x in xrange(1, 11)]
+
 
 def test_get_many_max_getwork(task_master, work_spec):
     work_spec = dict(work_spec)
@@ -186,11 +197,15 @@ def test_get_many_max_getwork(task_master, work_spec):
     task_master.add_work_units(
         work_spec['name'],
         [
-            ('u{:03d}'.format(x), {'k': 'v{}'.format(x)}) for x in xrange(1,100)
+            ('u{:03d}'.format(x), {'k': 'v{}'.format(x)})
+            for x in xrange(1, 100)
         ])
-    wus = task_master.get_work('test', available_gb=1, lease_time=300, max_jobs=10)
+    wus = task_master.get_work('test', available_gb=1, lease_time=300,
+                               max_jobs=10)
     assert len(wus) == 5
-    assert [wu.key for wu in wus] == ['u{:03d}'.format(x) for x in xrange(1,6)]
+    assert [wu.key for wu in wus] == ['u{:03d}'.format(x)
+                                      for x in xrange(1, 6)]
+
 
 def test_get_too_many(task_master, work_spec):
     # check what happens when we get the last few
@@ -200,7 +215,8 @@ def test_get_too_many(task_master, work_spec):
     task_master.add_work_units(
         work_spec['name'],
         [
-            ('u{:03d}'.format(x), {'k': 'v{}'.format(x)}) for x in xrange(1,100)
+            ('u{:03d}'.format(x), {'k': 'v{}'.format(x)})
+            for x in xrange(1, 100)
         ])
 
     other_work_spec = {
@@ -208,19 +224,23 @@ def test_get_too_many(task_master, work_spec):
         'min_gb': 0.1,
         'module': 'coordinate.tests.test_job_client',
         'run_function': 'run_function',
-        'weight': 300, # winner
+        'weight': 300,  # winner
     }
     task_master.set_work_spec(other_work_spec)
     task_master.add_work_units(
         'ws2',
         [
-            ('z{:03d}'.format(x), {'k': 'v{}'.format(x)}) for x in xrange(1,5)
+            ('z{:03d}'.format(x), {'k': 'v{}'.format(x)})
+            for x in xrange(1, 5)
         ])
 
-    wus = task_master.get_work('test', available_gb=1, lease_time=300, max_jobs=10)
-    # we should get 4 from the higher weight spec queue, but none from the other
+    wus = task_master.get_work('test', available_gb=1, lease_time=300,
+                               max_jobs=10)
+    # we should get 4 from the higher weight spec queue, but none from
+    # the other
     assert len(wus) == 4
-    assert [wu.key for wu in wus] == ['z{:03d}'.format(x) for x in xrange(1,5)]
+    assert [wu.key for wu in wus] == ['z{:03d}'.format(x)
+                                      for x in xrange(1, 5)]
 
 
 def test_prioritize(task_master, work_spec):
@@ -329,3 +349,68 @@ def test_fail_succeed(task_master, work_spec):
     # the end status should be "succeeded"
     status = task_master.get_work_unit_status(work_spec['name'], 'a')
     assert status['status'] == task_master.FINISHED
+
+
+def test_get_child_units_basic(task_master, work_spec):
+    task_master.set_work_spec(work_spec)
+    task_master.add_work_units(work_spec['name'], [('a', {'k': 'v'})])
+    task_master.worker_register('parent')
+    task_master.worker_register('child', parent='parent')
+
+    assert task_master.get_child_work_units('parent') == {}
+
+    wu = task_master.get_work('child')
+    assert wu is not None
+    assert wu.work_spec_name == work_spec['name']
+    assert wu.key == 'a'
+
+    wudict = task_master.get_child_work_units('parent')
+    assert len(wudict) == 1
+    assert 'child' in wudict
+    assert len(wudict['child']) == 1
+    assert wu.work_spec_name == wudict['child'][0].work_spec_name
+    assert wu.key == wudict['child'][0].key
+    assert wu.worker_id == wudict['child'][0].worker_id
+    assert wu.data == wudict['child'][0].data
+
+    wu.finish()
+    assert task_master.get_child_work_units('parent') == {}
+
+
+def test_get_child_units_multi(task_master, work_spec):
+    task_master.set_work_spec(work_spec)
+    task_master.add_work_units(work_spec['name'],
+                               [('a', {'k': 'v'}), ('b', {'k': 'v'})])
+    task_master.worker_register('parent')
+    task_master.worker_register('child', parent='parent')
+
+    assert task_master.get_child_work_units('parent') == {}
+
+    wus = task_master.get_work('child', max_jobs=10)
+    assert len(wus) == 2
+    assert sorted([wu.key for wu in wus]) == ['a', 'b']
+    assert all(wu.work_spec_name == work_spec['name'] for wu in wus)
+
+    wudict = task_master.get_child_work_units('parent')
+    assert len(wudict) == 1
+    assert 'child' in wudict
+    assert len(wudict['child']) == 2
+    assert sorted([wu.key for wu in wudict['child']]) == ['a', 'b']
+    assert all(wu.work_spec_name == work_spec['name']
+               for wu in wudict['child'])
+    assert all(wu.worker_id == 'child' for wu in wudict['child'])
+
+    wus[0].finish()
+
+    wudict = task_master.get_child_work_units('parent')
+    assert len(wudict) == 1
+    assert 'child' in wudict
+    assert len(wudict['child']) == 1
+    assert wus[1].work_spec_name == wudict['child'][0].work_spec_name
+    assert wus[1].key == wudict['child'][0].key
+    assert wus[1].worker_id == wudict['child'][0].worker_id
+    assert wus[1].data == wudict['child'][0].data
+
+    wus[1].finish()
+
+    assert task_master.get_child_work_units('parent') == {}
