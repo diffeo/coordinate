@@ -1,7 +1,7 @@
 '''Coordinate Worker framework.
 
 .. This software is released under an MIT/X11 open source license.
-   Copyright 2012-2014 Diffeo, Inc.
+   Copyright 2012-2015 Diffeo, Inc.
 
 Gets work units from the coordinate server, manages configuration of
 the local environment, calls the appropriate code to process the work
@@ -22,10 +22,6 @@ use this worker infrastructure at all.
     :members:
     :show-inheritance:
 
-.. autoclass:: MultiWorker
-    :members:
-    :show-inheritance:
-
 .. autoclass:: HeadlessWorker
     :members:
     :show-inheritance:
@@ -37,53 +33,35 @@ use this worker infrastructure at all.
 .. autofunction:: run_worker
 
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, division, print_function
 import abc
 import errno
 import logging
-import multiprocessing
-from operator import itemgetter
 import os
-import pkg_resources
 import random
-import Queue
 import signal
 import socket
 import struct
 import sys
-import threading
 import time
 import traceback
 
+import pkg_resources
 import psutil
 from setproctitle import setproctitle
 
 import dblogger
 import coordinate
-from coordinate import TaskMaster
-from coordinate.exceptions import LostLease
 import yakonfig
+from . import TaskMaster
+from .exceptions import LostLease, ProgrammerError
 
 logger = logging.getLogger(__name__)
 
 
 def nice_identifier():
     rbytes = os.urandom(16)
-    return ''.join(map(lambda c: '{:x}'.format(ord(c)), rbytes))
-
-
-#from coordinate._task_master import build_task_master
-# TODO move this? delete?
-# def test_work_program(work_unit):
-#     # just to show that this works, we get the config from the data
-#     # and *reconnect* to the registry with a second instances instead
-#     # of using work_unit.registry
-#     config = work_unit.data['config']
-#     sleeptime = float(work_unit.data.get('sleep', 9.0))
-#     task_master = build_task_master(config)
-#     logger.info('executing work_unit %r ... %s', work_unit.key, sleeptime)
-#     time.sleep(sleeptime)  # pretend to work
-#     logger.info('finished %r' % work_unit)
+    return ''.join('{:x}'.format(ord(c)) for c in rbytes)
 
 
 def run_worker(worker_class, *args, **kwargs):
@@ -105,7 +83,7 @@ def run_worker(worker_class, *args, **kwargs):
     try:
         worker = worker_class(*args, **kwargs)
     except Exception:
-        logger.critical('failed to create worker {0!r}'.format(worker_class),
+        logger.critical('failed to create worker %r', worker_class,
                         exc_info=True)
         raise
     # A note on style here:
@@ -122,10 +100,10 @@ def run_worker(worker_class, *args, **kwargs):
         worker.run()
         worker.unregister()
     except Exception:
-        logger.error('worker {0!r} died'.format(worker_class), exc_info=True)
+        logger.error('worker %r died', worker_class, exc_info=True)
         try:
             worker.unregister()
-        except:
+        except Exception:  # pylint: disable=broad-except
             pass
         raise
 
@@ -155,7 +133,7 @@ class Worker(object):
         #: Parent worker ID
         self.parent = None
         #: Required maximum time between :meth:`heartbeat`
-        self.lifetime = 300 * 20 # 100 minutes
+        self.lifetime = 100 * 60
 
     def environment(self):
         '''Get raw data about this worker.
@@ -195,8 +173,10 @@ class Worker(object):
             aliases=tuple(aliases),
             ipaddrs=tuple(ipaddrs),
             fqdn=socket.getfqdn(),
-            version=pkg_resources.get_distribution("coordinate").version, # pylint: disable=E1103
-            working_set=[(dist.key, dist.version) for dist in pkg_resources.WorkingSet()], # pylint: disable=E1103
+            version=(pkg_resources  # pylint: disable=no-member
+                     .get_distribution("coordinate").version),
+            working_set=[(dist.key, dist.version)
+                         for dist in pkg_resources.WorkingSet()],
             # config_hash=self.config['config_hash'],
             # config_json = self.config['config_json'],
             memory=psutil.virtual_memory(),
@@ -213,7 +193,9 @@ class Worker(object):
 
         '''
         if self.worker_id:
-            raise ProgrammerError('Worker.register cannot be called again without first calling unregister; it is not idempotent')
+            raise ProgrammerError('Worker.register cannot be called again '
+                                  'without first calling unregister; it is '
+                                  'not idempotent')
         self.parent = parent
         self.worker_id = nice_identifier()
         self.task_master.worker_id = self.worker_id
@@ -225,7 +207,7 @@ class Worker(object):
 
         This requires the worker to already have been :meth:`register()`.
 
-        ''' 
+        '''
         self.task_master.worker_unregister(self.worker_id)
         self.task_master.worker_id = None
         self.worker_id = None
@@ -250,230 +232,6 @@ class Worker(object):
         pass
 
 
-class HeadlessWorker(Worker):
-    '''Child worker to do work under :mod:`multiprocessing`.
-
-    The :meth:`run` method expects to run a single
-    :class:`~coordinate.WorkUnit`, which it will receive from its
-    parent :class:`MultiWorker`.  This class expects to be the only
-    thing run in a :mod:`multiprocessing` child process.
-
-    '''
-
-    def __init__(self, config, worker_id, work_spec_name, work_unit_key):
-        # Do a complete reset of logging right now before we do anything else.
-        #
-        # multiprocessing.Pool is super super asynchronous: when you
-        # apply_async() your job description goes into a queue, which
-        # a thread moves to another queue, a second thread tries every
-        # 0.1s to make sure the subprocesses exist, and the subprocess
-        # actually pulls the job off the queue.  If your main thread is
-        # doing something when that 0.1s timer fires, it's possible that
-        # the os.fork()ed child is actually forked holding some lock from
-        # the parent.
-        #
-        # See:  http://bugs.python.org/issue6721
-        #
-        # logging seems to be the most prominent thing that causes
-        # trouble here.  There is both a global logging._lock,
-        # plus every logging.Handler instance has a lock.  If we just
-        # clean up these locks we'll be good.
-        logging._lock = threading.RLock()
-        for handler in logging._handlers.itervalues():
-            handler.createLock()
-
-        # Now go on as normal
-        super(HeadlessWorker, self).__init__(config)
-        for sig_num in [signal.SIGTERM, signal.SIGHUP, signal.SIGABRT]:
-            signal.signal(sig_num, self.terminate)
-        self.work_unit = self.task_master.get_assigned_work_unit(
-            worker_id, work_spec_name, work_unit_key)
-        # carry this to overwrite self.worker_id after .register()
-        self._pre_assigned_worker_id = worker_id
-
-    def register(self):
-        super(HeadlessWorker, self).register()
-        self.worker_id = self._pre_assigned_worker_id
-
-    def run(self):
-        self.work_unit.run()
-
-    def terminate(self, sig_num, frame):
-        logger.info('received %d, ending work unit', sig_num)
-        self.work_unit.terminate()
-        sys.exit()
-
-
-class MultiWorker(Worker):
-    '''Parent worker that runs multiple jobs continuously.
-
-    This uses :mod:`multiprocessing` to run one child
-    :class:`HeadlessWorker` per core on the system, and averages
-    system memory to report `available_gb`.  This class manages the
-    :class:`~coordinate.TaskMaster` interactions and sends
-    :class:`~coordinate.WorkUnit` instances to its managed child
-    processes.
-
-    This class is normally invoked from the command line by
-    running ``coordinate run_worker``, which runs this class as a
-    daemon process.
-
-    Instances of this class, running across many machines in a
-    cluster, are controlled by :meth:`coordinate.TaskMaster.get_mode`.
-    The :meth:`run` method will exit if the current mode is
-    :attr:`~coordinate.TaskMaster.TERMINATE`.  If the mode is
-    :attr:`~coordinate.TaskMaster.IDLE` then the worker will stay
-    running but will not start new jobs.  New jobs will be started
-    only when the mode becomes :attr:`~coordinate.TaskMaster.RUN`.  The
-    system defaults to :attr:`~coordinate.TaskMaster.IDLE` state, but if
-    workers exit immediately, it may be because the mode has been left
-    at :attr:`~coordinate.TaskMaster.TERMINATE` from a previous
-    execution.
-
-    If `tasks_per_cpu` is set in the configuration block for coordinate,
-    then that many child process will be launched for each CPU on the
-    machine.
-
-    '''
-    def __init__(self, config):
-        super(MultiWorker, self).__init__(config)
-        self._event_queue = multiprocessing.Queue()
-        self._mode = None
-        self.pool = None
-        logger.debug('MultiWorker initialized')
-
-    _available_gb = None
-
-    @classmethod
-    def available_gb(cls):
-        if cls._available_gb is None:
-            mem = psutil.virtual_memory()
-            cls._available_gb = float(mem.available) / (multiprocessing.cpu_count() * 2**30)
-        return cls._available_gb
-
-    def _finish_callback(self, *args):
-        # We don't actually get anything useful from the work call, so
-        # just post an event that causes us to wake up and poll all
-        # the slots.
-        self._event_queue.put(True)
-
-    def _poll_async_result(self, async_result, work_unit, do_update=True):
-        if async_result is None:
-            return
-        assert work_unit is not None
-        if not async_result.ready():
-            if do_update:
-                logger.debug('not ready %r, update', work_unit.key)
-                work_unit.update()
-            return
-        try:
-            async_result.get(0)
-        except multiprocessing.TimeoutError:
-            if do_update:
-                logger.debug('get timeout update %r', work_unit.key)
-                work_unit.update()
-            return
-        except Exception, exc:
-            logger.error('trapped child exception', exc_info=True)
-            work_unit.fail(exc)
-        else:
-            ## if it gets here, slot should always be finished
-            assert async_result.ready()
-            work_unit.finish()
-        ## either failed or finished
-        assert work_unit.failed or work_unit.finished
-
-    def _get_and_start_work(self):
-        "return (async_result, work_unit) or (None, None)"
-        worker_id = nice_identifier()
-        work_unit = self.task_master.get_work(worker_id, available_gb=self.available_gb())
-        if work_unit is None:
-            return None, None
-        async_result = self.pool.apply_async(
-            run_worker,
-            (HeadlessWorker, self.task_master.config,
-             worker_id,
-             work_unit.work_spec_name,
-             work_unit.key),
-            callback=self._finish_callback)
-        return async_result, work_unit
-
-    def _poll_slots(self, slots, mode=None, do_update=False):
-        hasWork = True
-        for i in xrange(len(slots)):
-            async_result, work_unit = slots[i]
-            if (async_result is not None) and (work_unit is not None):
-                self._poll_async_result(async_result, work_unit, do_update=do_update)
-                if work_unit.failed or work_unit.finished:
-                    slots[i] = (None, None)
-            if (slots[i][0] is None) and (mode == self.task_master.RUN):
-                if hasWork:
-                    slots[i] = self._get_and_start_work()
-                    if slots[i][0] is None:
-                        # If we fail to get work, don't hammer the
-                        # taskmaster with requests for work. Wait
-                        # until after a sleep and the next _poll_slots
-                        # cycle.
-                        hasWork = False
-
-    def run(self):
-        '''Fetch and dispatch jobs as long as the system is running.
-
-        This periodically checks the :class:`coordinate.TaskMaster` mode
-        and asks it for more work.  It will normally run forever in a
-        loop until the mode becomes
-        :attr:`~coordinate.TaskMaster.TERMINATE`, at which point it
-        waits for all outstanding jobs to finish and exits.
-
-        This will :func:`~coordinate.Worker.heartbeat` and check for new
-        work whenever a job finishes, or otherwise on a random
-        interval between 1 and 5 seconds.
-
-        '''
-
-        tm = self.task_master
-        num_workers = multiprocessing.cpu_count()
-        if 'tasks_per_cpu' in self.config:
-            num_workers *= self.config.get('tasks_per_cpu') or 1
-        if self.pool is None:
-            self.pool = multiprocessing.Pool(num_workers, maxtasksperchild=1)
-        ## slots is a fixed-length list of [AsyncRsults, WorkUnit]
-        slots = [[None, None]] * num_workers
-        logger.info('MultiWorker starting with %s workers', num_workers)
-        min_loop_time = 2.0
-        lastFullPoll = time.time()
-        while True:
-            mode = self.heartbeat()
-            if mode != self._mode:
-                logger.info('worker {0} changed to mode {1}'
-                            .format(self.worker_id, mode))
-                self._mode = mode
-            now = time.time()
-            should_update = (now - lastFullPoll) > min_loop_time
-            self._poll_slots(slots, mode=mode, do_update=should_update)
-            if should_update:
-                lastFullPoll = now
-
-            if mode == tm.TERMINATE:
-                num_waiting = sum(map(int, map(bool, map(itemgetter(0), slots))))
-                if num_waiting == 0:
-                    logger.info('MultiWorker all children finished')
-                    break
-                else:
-                    logger.info('MultiWorker waiting for %d children to finish', num_waiting)
-
-            sleepsecs = random.uniform(1,5)
-            sleepstart = time.time()
-            try:
-                self._event_queue.get(block=True, timeout=sleepsecs)
-                logger.debug('woken by event looptime=%s sleeptime=%s', sleepstart - now, time.time() - sleepstart)
-            except Queue.Empty, empty:
-                logger.debug('queue timed out. be exhausting, looptime=%s sleeptime=%s', sleepstart - now, time.time() - sleepstart)
-                # it's cool, timed out, do the loop of checks and stuff.
-
-        logger.info('MultiWorker exiting')
-
-
 class SingleWorker(Worker):
     '''Worker that runs exactly one job when called.
 
@@ -483,7 +241,8 @@ class SingleWorker(Worker):
     which calls :meth:`as_child`.
 
     '''
-    def __init__(self, config, task_master=None, work_spec_names=None, max_jobs=1):
+    def __init__(self, config, task_master=None, work_spec_names=None,
+                 max_jobs=1):
         super(SingleWorker, self).__init__(config, task_master)
         self.work_spec_names = work_spec_names
         self.max_jobs = config.get('worker_job_fetch', max_jobs)
@@ -513,8 +272,10 @@ class SingleWorker(Worker):
         :return: :const:`True` if there was a job (even if it failed)
 
         '''
-        available_gb = MultiWorker.available_gb()
-        unit = self.task_master.get_work(self.worker_id, available_gb, work_spec_names=self.work_spec_names, max_jobs=self.max_jobs)
+        unit = self.task_master.get_work(
+            self.worker_id,
+            available_gb=psutil.virtual_memory().available / 2**30,
+            work_spec_names=self.work_spec_names, max_jobs=self.max_jobs)
         if not unit:
             logger.info('No work to do; stopping.')
             return False
@@ -524,15 +285,18 @@ class SingleWorker(Worker):
                 if not ok:
                     try:
                         xunit.update(-1)
-                    except LostLease as e:
+                    except LostLease:
                         pass
-                    except Exception as bad:
-                        # we're already quitting everything, but this is weirdly bad.
-                        logger.error('failed to release lease on %r %r', xunit.work_spec_name, xunit.key, exc_info=True)
+                    except Exception:  # pylint: disable=broad-except
+                        # we're already quitting everything, but this is
+                        # weirdly bad.
+                        logger.error('failed to release lease on %r %r',
+                                     xunit.work_spec_name, xunit.key,
+                                     exc_info=True)
                 else:
                     ok = self._run_unit(xunit, set_title)
             return ok
-        return self._run_unit(unit)
+        return self._run_unit(unit, set_title)
 
     def _run_unit(self, unit, set_title=False):
         try:
@@ -541,12 +305,11 @@ class SingleWorker(Worker):
                              .format(unit.work_spec_name, unit.key))
             unit.run()
             unit.finish()
-        except LostLease, e:
+        except LostLease:
             # We don't own the unit any more so don't try to report on it
             logger.warn('Lost Lease on %r', unit.key)
-            pass
-        except Exception, e:
-            unit.fail(e)
+        except Exception, exc:  # pylint: disable=broad-except
+            unit.fail(exc)
         return True
 
     #: Exit code from :meth:`as_child` if it ran a work unit (maybe
@@ -579,7 +342,7 @@ class SingleWorker(Worker):
                 sys.exit(cls.EXIT_SUCCESS)
             else:
                 sys.exit(cls.EXIT_BORED)
-        except Exception, e:
+        except Exception, e:  # pylint: disable=broad-except
             # There's some off chance we have logging.
             # You will be here if redis is down, for instance,
             # and the yakonfig dblogger setup runs but then
@@ -587,7 +350,8 @@ class SingleWorker(Worker):
             if len(logging.root.handlers) > 0:
                 logger.critical('failed to do any work', exc_info=e)
             else:
-                sys.stderr.write('exeption: {}\n{}\s'.format(e, traceback.format_exc()))
+                sys.stderr.write('exception: {0}\n{1}\n'
+                                 .format(e, traceback.format_exc()))
             sys.exit(cls.EXIT_EXCEPTION)
 
 
@@ -852,7 +616,7 @@ class ForkWorker(Worker):
         '''
         if group in self.debug_worker:
             if 'stdout' in self.debug_worker:
-                print message
+                print(message)
             self.log(logging.DEBUG, message)
 
     def log_spewer(self, gconfig, fd):
@@ -905,8 +669,8 @@ class ForkWorker(Worker):
                            .format(self.log_child))
                 os.kill(self.log_child, signal.SIGTERM)
                 os.waitpid(self.log_child, 0)
-            except OSError, e:
-                if e.errno == errno.ESRCH or e.errno == errno.ECHILD:
+            except OSError, exc:
+                if exc.errno == errno.ESRCH or exc.errno == errno.ECHILD:
                     # already gone
                     pass
                 else:
@@ -930,7 +694,7 @@ class ForkWorker(Worker):
         :return:  Time to wait before calling this function again
 
         '''
-        any_happy_children = False
+        # any_happy_children = False
         any_sad_children = False
         any_bored_children = False
 
@@ -941,8 +705,8 @@ class ForkWorker(Worker):
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
-            except OSError, e:
-                if e.errno == errno.ECHILD:
+            except OSError, exc:
+                if exc.errno == errno.ECHILD:
                     # No children at all
                     pid = 0
                 else:
@@ -961,7 +725,7 @@ class ForkWorker(Worker):
                                'worker {0} exited with code {1}'
                                .format(pid, code))
                     if code == SingleWorker.EXIT_SUCCESS:
-                        any_happy_children = True
+                        pass  # any_happy_children = True
                     elif code == SingleWorker.EXIT_EXCEPTION:
                         self.log(logging.WARNING,
                                  'child {0} reported failure'.format(pid))
@@ -1040,9 +804,9 @@ class ForkWorker(Worker):
                 # clean up after itself
                 continue
             # filter on those actually assigned to the child worker
-            wul = filter(lambda wu: wu.worker_id == child, wul)
+            wul = [unit for unit in wul if unit.worker_id == child]
             # check for any still active not-overdue job
-            if any(filter(lambda wu: wu.expires > now, wul)):
+            if any(unit.expires > now for unit in wul):
                 continue
             # So either someone else is doing its work or it's just overdue
             environment = self.task_master.get_heartbeat(child)
@@ -1055,12 +819,12 @@ class ForkWorker(Worker):
             os.kill(environment['pid'], signal.SIGTERM)
             # This will cause the child to die, and do_some_work will
             # reap it; but we'd also like the job to fail if possible
-            for wu in wul:
-                if wu.data is None:
-                    logger.critical('how did wu.data become: %r' % wu.data)
+            for unit in wul:
+                if unit.data is None:
+                    logger.critical('how did wu.data become: %r', unit.data)
                 else:
-                    wu.data['traceback'] = 'job expired'
-                wu.fail(exc=Exception('job expired'))
+                    unit.data['traceback'] = 'job expired'
+                unit.fail(exc=Exception('job expired'))
 
     def stop_gracefully(self):
         '''Refuse to start more processes.
@@ -1088,8 +852,8 @@ class ForkWorker(Worker):
             try:
                 os.kill(pid, signal.SIGTERM)
                 os.waitpid(pid, 0)
-            except OSError, e:
-                if e.errno == errno.ESRCH or e.errno == errno.ECHILD:
+            except OSError, exc:
+                if exc.errno == errno.ESRCH or exc.errno == errno.ECHILD:
                     # No such process
                     pass
                 else:
@@ -1125,7 +889,8 @@ class ForkWorker(Worker):
                     mode = self.heartbeat()
                     if mode != self.last_mode:
                         self.log(logging.INFO,
-                                 'coordinate global mode is {0!r}'.format(mode))
+                                 'coordinate global mode is {0!r}'
+                                 .format(mode))
                         self.last_mode = mode
                     self.heartbeat_deadline = (time.time() +
                                                self.heartbeat_interval)
@@ -1146,7 +911,7 @@ class ForkWorker(Worker):
                                  'stopping in response to signal')
                         break
                 time.sleep(interval)
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             self.log(logging.CRITICAL,
                      'uncaught exception in worker: ' + traceback.format_exc())
         finally:

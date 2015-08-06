@@ -1,8 +1,10 @@
-'''Command-line :mod:`coordinate_worker` tool for launching the
-worker daemon.
+'''Launch the coordinate worker daemon.
 
 .. This software is released under an MIT/X11 open source license.
-   Copyright 2012-2014 Diffeo, Inc.
+   Copyright 2012-2015 Diffeo, Inc.
+
+Command-line :program:`coordinate_worker` tool for launching the
+worker daemon.
 
 .. option:: --pidfile /path/to/file.pid
 
@@ -26,20 +28,17 @@ import argparse
 import lockfile
 import logging
 import os
-import sys
-import time
 import traceback
 
 import daemon
 
 import dblogger
 import coordinate
-from coordinate.exceptions import NoSuchWorkSpecError, NoSuchWorkUnitError
-from coordinate.workers import run_worker, MultiWorker, SingleWorker, \
-    ForkWorker
+from coordinate.workers import run_worker, ForkWorker
 import yakonfig
 
 logger = logging.getLogger(__name__)
+
 
 def absolute_path(string):
     '''"Convert" a string to a string that is an absolute existing path.'''
@@ -51,13 +50,16 @@ def absolute_path(string):
         raise argparse.ArgumentTypeError(msg)
     return string
 
+
 def args_run_worker(parser):
+    '''Add command-line arguments.'''
     parser.add_argument('--pidfile', metavar='FILE', type=absolute_path,
                         help='file to hold process ID of worker')
     parser.add_argument('--logpath', metavar='FILE', type=absolute_path,
                         help='file to receive local logs')
     parser.add_argument('--foreground', action='store_true',
                         help='do not run the worker as a daemon')
+
 
 def start_logging(gconfig, logpath):
     '''Turn on logging and set up the global config.
@@ -79,27 +81,31 @@ def start_logging(gconfig, logpath):
     yakonfig.set_default_config([coordinate, dblogger], config=gconfig)
     if logpath:
         formatter = dblogger.FixedWidthFormatter()
-        # TODO: do we want byte-size RotatingFileHandler or TimedRotatingFileHandler?
+        # TODO: do we want byte-size RotatingFileHandler or
+        # TimedRotatingFileHandler?
         handler = logging.handlers.RotatingFileHandler(
             logpath, maxBytes=10000000, backupCount=3)
         handler.setFormatter(formatter)
         logging.getLogger('').addHandler(handler)
 
-def start_worker(which_worker, config={}):
+
+def start_worker(which_worker, config=None):
     '''Start some worker class.
 
     :param str which_worker: name of the worker
     :param dict config: ``coordinate`` config block
 
     '''
-    if which_worker == 'multi_worker':
-        cls = MultiWorker
-    elif which_worker == 'fork_worker':
+    if config is None:
+        config = {}
+    # NB: there used to be more worker implementations to pick from
+    if which_worker == 'fork_worker':
         cls = ForkWorker
     else:
         # Don't complain too hard, just fall back
         cls = ForkWorker
     return run_worker(cls, config)
+
 
 def go(gconfig, args):
     '''Actually run the worker.
@@ -120,6 +126,7 @@ def go(gconfig, args):
     else:
         start_logging(gconfig, args.logpath)
     return start_worker(which_worker, rconfig)
+
 
 def fork_worker(gconfig, args):
     '''Run the worker as a daemon process.
@@ -142,11 +149,15 @@ def fork_worker(gconfig, args):
                     f.write(str(os.getpid()))
             go(gconfig, args)
         except Exception, exc:
-            logp = logpath or os.path.join('/tmp', 'coordinate-failure.log')
+            logp = args.logpath
+            if not logp:
+                logp = os.path.join('/tmp', 'coordinate-failure.log')
             open(logp, 'a').write(traceback.format_exc(exc))
             raise
 
+
 def main():
+    '''Main command-line entry point.'''
     parser = argparse.ArgumentParser(
         description='run a coordinate work-handling daemon')
     args_run_worker(parser)

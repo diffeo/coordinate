@@ -614,7 +614,7 @@ class TaskMaster(CborRpcClient):
         if available_gb is not None:
             if not isinstance(available_gb, (int, long, float)):
                 raise ValueError('available_gb must be a number, got {0!r}'
-                                 .format(type(max_jobs)))
+                                 .format(type(available_gb)))
             options['available_gb'] = available_gb
         if max_jobs is not None:
             if not isinstance(max_jobs, (int, long)):
