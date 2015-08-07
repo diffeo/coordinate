@@ -1,10 +1,10 @@
 '''Run rejester worker tests under coordinate.
 
-.. Your use of this software is governed by your license agreement.
-   Copyright 2012-2014 Diffeo, Inc.
+.. This software is released under an MIT/X11 open source license.
+   Copyright 2012-2015 Diffeo, Inc.
 
 '''
-from __future__ import absolute_import
+from __future__ import absolute_import, division, print_function
 import contextlib
 import os
 import copy

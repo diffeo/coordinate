@@ -20,10 +20,15 @@ logger = logging.getLogger(__name__)
 
 @pytest.yield_fixture(scope='function')
 def jqconfig(random_schema):
+    if connect_string is None:
+        pytest.skip()
+        return
     c = {'postgres_connect': connect_string, 'postgres_schema': random_schema}
     yield c
-    ws = PostgresWorkSpec('', None, connect_string=c['postgres_connect'], schema=random_schema)
+    ws = PostgresWorkSpec('', None, connect_string=c['postgres_connect'],
+                          schema=random_schema)
     ws.delete_all_storage()
+
 
 def test_job_server_snapshot(monkeypatch, xconfig, jqconfig):
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 1.0)

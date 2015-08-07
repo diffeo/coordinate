@@ -22,7 +22,7 @@ use this worker infrastructure at all.
     :members:
     :show-inheritance:
 
-.. autoclass:: HeadlessWorker
+.. autoclass:: LoopWorker
     :members:
     :show-inheritance:
 
@@ -99,7 +99,7 @@ def run_worker(worker_class, *args, **kwargs):
         worker.register()
         worker.run()
         worker.unregister()
-    except Exception:
+    except Exception:  # pylint: disable=broad-except
         logger.error('worker %r died', worker_class, exc_info=True)
         try:
             worker.unregister()
@@ -272,31 +272,34 @@ class SingleWorker(Worker):
         :return: :const:`True` if there was a job (even if it failed)
 
         '''
-        unit = self.task_master.get_work(
+        units = self.task_master.get_work(
             self.worker_id,
             available_gb=psutil.virtual_memory().available / 2**30,
             work_spec_names=self.work_spec_names, max_jobs=self.max_jobs)
-        if not unit:
+        if not units:
             logger.info('No work to do; stopping.')
             return False
-        if isinstance(unit, (list, tuple)):
-            ok = True
-            for xunit in unit:
-                if not ok:
-                    try:
-                        xunit.update(-1)
-                    except LostLease:
-                        pass
-                    except Exception:  # pylint: disable=broad-except
-                        # we're already quitting everything, but this is
-                        # weirdly bad.
-                        logger.error('failed to release lease on %r %r',
-                                     xunit.work_spec_name, xunit.key,
-                                     exc_info=True)
-                else:
-                    ok = self._run_unit(xunit, set_title)
-            return ok
-        return self._run_unit(unit, set_title)
+        if not isinstance(units, (list, tuple)):
+            # got only one work unit back, package it
+            units = [units]
+        # Now run all of the units; or if we get a critical failure
+        # abandon the ones we haven't run yet
+        ok = True
+        for unit in units:
+            if ok:
+                ok = self._run_unit(unit, set_title)
+            else:
+                try:
+                    unit.update(-1)
+                except LostLease:
+                    pass
+                except Exception:  # pylint: disable=broad-except
+                    # we're already quitting everything, but this is
+                    # weirdly bad.
+                    logger.error('failed to release lease on %r %r',
+                                 unit.work_spec_name, unit.key,
+                                 exc_info=True)
+        return ok
 
     def _run_unit(self, unit, set_title=False):
         try:
