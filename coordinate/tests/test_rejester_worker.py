@@ -1,4 +1,4 @@
-'''Run rejester worker tests under coordinate.
+'''Run worker tests under coordinate.
 
 .. This software is released under an MIT/X11 open source license.
    Copyright 2012-2015 Diffeo, Inc.
@@ -23,10 +23,11 @@ from coordinate.workers import SingleWorker, ForkWorker
 
 logger = logging.getLogger(__name__)
 
+
 # runs a local in-memory-only coordinate daemon, returns port it started on
 @pytest.yield_fixture(scope='module')
 def local_server_port():
-    port = random.randint(4000,32000)
+    port = random.randint(4000, 32000)
     logger.info('random port:%s', port)
     subp = subprocess.Popen([sys.executable, '-m', 'coordinate.run',
                              '-v', '--port', str(port)], shell=False)
@@ -39,6 +40,7 @@ def local_server_port():
         subp.kill()
     except:
         logger.error('error killing coordinate subprocess', exc_info=True)
+
 
 @pytest.yield_fixture(scope='function')
 def task_master(local_server_port):
@@ -55,21 +57,15 @@ def task_master(local_server_port):
     for k in list(work_specs):
         tm.del_work_spec(k['name'])
 
+
 def work_program(work_unit):
-    # just to show that this works, we get the config from the data
-    # and *reconnect* to the registry with a second instances instead
-    # of using work_unit.registry
-    config = work_unit.data['config']
     sleeptime = float(work_unit.data.get('sleep', 9.0))
-    #rejester.TaskMaster(config)  # this constructor does the reconnect
     logger.info('executing work_unit %r ... %s', work_unit.key, sleeptime)
     time.sleep(sleeptime)  # pretend to work
 
 
 def work_program_broken(work_unit):
     logger.info('executing "broken" work_unit %r', work_unit.key)
-    config = work_unit.data['config']
-    rejester.TaskMaster(config)
     raise Exception('simulate broken work_unit')
 
 work_spec = dict(
@@ -81,6 +77,7 @@ work_spec = dict(
     run_function='work_program',
     terminate_function='work_program',
 )
+
 
 @contextlib.contextmanager
 def run_worker(config, tmpdir, name='worker'):
@@ -139,29 +136,39 @@ def run_worker(config, tmpdir, name='worker'):
 
     logger.warn('worker failed to die, look for zombie pid={0}'.format(pid))
 
+
 def assert_started(tm, work_spec, timeout=10):
     work_spec_name = work_spec['name']
+
     def okay():
         st = tm.status(work_spec_name)
         return (st['num_available'] == 0) and (st['num_pending'] > 0)
-    assert wait_for(timeout, okay), ("worker didn't start doing work " + repr(tm.status(work_spec['name'])))
+    assert wait_for(timeout, okay), ("worker didn't start doing work " +
+                                     repr(tm.status(work_spec['name'])))
 
 
 def assert_stopped(tm, work_spec, timeout=10):
     work_spec_name = work_spec['name']
+
     def isstopped():
         st = tm.status(work_spec_name)
         return st['num_pending'] == 0
 
-    assert wait_for(timeout, isstopped), ("worker didn't stop doing work " + repr(tm.status(work_spec['name'])))
+    assert wait_for(timeout, isstopped), ("worker didn't stop doing work " +
+                                          repr(tm.status(work_spec['name'])))
 
 
 def assert_completion(tm, work_spec, timeout=15):
     work_spec_name = work_spec['name']
+
     def alldone():
         st = tm.status(work_spec_name)
         return (st['num_available'] == 0) and (st['num_pending'] == 0)
-    assert wait_for(timeout, alldone), "worker didn't finish all of the work " + repr(tm.status(work_spec_name))
+
+    assert wait_for(timeout, alldone), (
+        "worker didn't finish all of the work " +
+        repr(tm.status(work_spec_name)))
+
 
 def wait_for(timeout, condition):
     start = time.time()
@@ -173,7 +180,6 @@ def wait_for(timeout, condition):
     return False
 
 
-#@pytest.mark.slow  # noqa
 def test_single_worker(task_master):
     work_units = dict([('key{0}'.format(x),
                         {'config': {},
@@ -213,8 +219,7 @@ def test_single_worker(task_master):
     assert st['num_finished'] == 2
     assert st['num_available'] == 0
 
-# 4th slowest, 6.6s
-#@pytest.mark.slow  # noqa
+
 def test_do_work(task_master, tmpdir):
     num_units = 10
     num_units_cursor = 0
@@ -234,7 +239,33 @@ def test_do_work(task_master, tmpdir):
     assert st['num_finished'] == num_units
 
 
-#@pytest.mark.slow  # noqa
+def test_do_work_with_profiling(task_master, tmpdir):
+    num_units = 10
+    num_units_cursor = 0
+    c = dict(task_master.config)
+    c['profile'] = {
+        'work_specs': [work_spec['name']],
+        'destination': str(tmpdir.join(
+            'prof.%(work_spec_name)s.%(work_unit_key)s')),
+    }
+    work_units = dict([('key' + str(x), {'config': c, 'sleep': 2})
+                       for x in xrange(num_units_cursor,
+                                       num_units_cursor + num_units)])
+    num_units_cursor += num_units
+    task_master.update_bundle(work_spec, work_units)
+    task_master.set_mode(task_master.RUN)
+
+    with run_worker(c, tmpdir):
+        assert_completion(task_master, work_spec)
+
+    st = task_master.status(work_spec['name'])
+    assert st['num_failed'] == 0
+    assert st['num_finished'] == num_units
+
+    for key in work_units.keys():
+        assert tmpdir.join('prof.tbundle.' + key).size() > 0
+
+
 def test_failed_work(task_master, tmpdir):
     work_spec_broken = copy.deepcopy(work_spec)
     work_spec_broken['run_function'] = 'work_program_broken'
@@ -313,8 +344,6 @@ def test_add_work_midway(task_master, tmpdir):
     assert st['num_finished'] == 2 * num_units
 
 
-# 5th slowest, 5.5s
-#@pytest.mark.slow  # noqa
 def test_fork_worker_expiry_kill(task_master, tmpdir):
     '''Test that job expiry stops a job.'''
     c = dict(task_master.config)
@@ -343,8 +372,7 @@ def test_fork_worker_expiry_kill(task_master, tmpdir):
         }
 
 
-#@pytest.mark.skipif(reason='non-deterministically fails')  # noqa
-@pytest.mark.slow  # noqa
+@pytest.mark.slow
 def test_fork_worker_expiry_dup(task_master, tmpdir):
     '''Test that job expiration and default_lifetime work as expected.'''
     # Create a job that sleeps for 10 seconds

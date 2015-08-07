@@ -35,6 +35,8 @@ use this worker infrastructure at all.
 '''
 from __future__ import absolute_import, division, print_function
 import abc
+from cProfile import Profile
+from datetime import datetime
 import errno
 import logging
 import os
@@ -240,12 +242,31 @@ class SingleWorker(Worker):
     is also invoked as the child process by :class:`ForkWorker`,
     which calls :meth:`as_child`.
 
+    If the configuration dictionary contains a key `profile`, then
+    this will run the standard :mod:`cProfile` profiler.  Under that
+    key there are two parameters.  `work_specs` is a list of work spec
+    names to profile.  `destination` is a destination filename.  Both
+    of these parameters must be passed for profiling to occur.  The
+    destination filename is percent formatted, understanding keys:
+
+    `work_spec_name`
+      Name of the work spec
+    `work_unit_key`
+      Name of the specific work unit
+    `ymd`
+      8-digit year, month, day
+    `hms`
+      6-digit (24-hour, integral) hour, minute, second
+
     '''
     def __init__(self, config, task_master=None, work_spec_names=None,
                  max_jobs=1):
         super(SingleWorker, self).__init__(config, task_master)
         self.work_spec_names = work_spec_names
         self.max_jobs = config.get('worker_job_fetch', max_jobs)
+        profile_config = config.get('profile', {})
+        self.profile_work_specs = profile_config.get('work_specs', [])
+        self.profile_destination = profile_config.get('destination', None)
 
     def run(self, set_title=False):
         '''Do some work.
@@ -306,7 +327,23 @@ class SingleWorker(Worker):
             if set_title:
                 setproctitle('coordinate worker {0!r} {1!r}'
                              .format(unit.work_spec_name, unit.key))
+            profiler = None
+            if ((self.profile_destination and
+                 unit.work_spec_name in self.profile_work_specs)):
+                now = datetime.now()
+                unit_info = {
+                    'work_spec_name': unit.work_spec_name,
+                    'work_unit_key': unit.key,
+                    'ymd': now.strftime('%Y%m%d'),
+                    'hms': now.strftime('%H%M%S'),
+                }
+                destination = self.profile_destination % unit_info
+                profiler = Profile()
+                profiler.enable()
             unit.run()
+            if profiler:
+                profiler.disable()
+                profiler.dump_stats(destination)
             unit.finish()
         except LostLease:
             # We don't own the unit any more so don't try to report on it
