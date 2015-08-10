@@ -918,14 +918,15 @@ class JobQueue(object):
                         .format(work_unit_key))
             if wu.status == FINISHED or wu.status == FAILED:
                 # It's done; who was working on it?
-                worker = self.workers.workers.get(wu.worker_id)
-                if ((worker and
-                     worker.work_spec is ws and
-                     wu in worker.work_units)):
-                    # Okay, we've finished the job.  Awesome.
-                    worker.work_units.discard(wu)
-                    if not worker.work_units:
-                        worker.work_spec = None
+                with self.workers.mutex:
+                    worker = self.workers.workers.get(wu.worker_id)
+                    if ((worker and
+                         worker.work_spec is ws and
+                         wu in worker.work_units)):
+                        # Okay, we've finished the job.  Awesome.
+                        worker.work_units.discard(wu)
+                        if not worker.work_units:
+                            worker.work_spec = None
         return (ok, msg)
 
     def get_work(self, worker_id, options):
@@ -971,10 +972,12 @@ class JobQueue(object):
             # some test code doesn't worker_heartbeat before diving in
             pass
         elif worker.work_units:
+            with self.workers.mutex:
+                work_spec_name = worker.work_spec.name
+                work_unit_keys = [wu.key for wu in worker.work_units]
             logger.warn('worker %s is already working on work spec '
                         '%r work units %r',
-                        worker_id, worker.work_spec.name,
-                        [wu.key for wu in worker.work_units])
+                        worker_id, work_spec_name, work_unit_keys)
 
         def valid(spec):
             if work_spec_names and spec.name not in work_spec_names:
@@ -997,8 +1000,9 @@ class JobQueue(object):
                 # we chose it and when we got work from it?
                 continue
             if worker is not None:
-                worker.work_spec = ws
-                worker.work_units.update(set(work_units))
+                with self.workers.mutex:
+                    worker.work_spec = ws
+                    worker.work_units.update(set(work_units))
             if max_jobs == 1:
                 # old style single return
                 wu = work_units[0]
