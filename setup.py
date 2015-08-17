@@ -130,7 +130,7 @@ setup(
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Topic :: Utilities',
-        'License :: Diffeo',
+        'License :: OSI Approved :: MIT License',  ## MIT/X11 license http://opensource.org/licenses/MIT
     ],
     tests_require=[
     ],
