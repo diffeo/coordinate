@@ -56,11 +56,11 @@ def backend(request):
 
 
 @pytest.fixture
-def jobqueue_conf(backend, namespace_string):
+def jobqueue_conf(backend, namespace_string, tmpdir):
     if backend == 'memory':
         return {}
     elif backend == 'sqlite':
-        return {'sqlite_path': ':memory:'}
+        return {'sqlite_path': str(tmpdir.join('coordinate.sqlite'))}
     elif backend == 'postgres':
         return {
             'postgres_connect': POSTGRES_CONNECT_STRING,
@@ -89,12 +89,12 @@ def job_queue(jobqueue_conf, xconfig):
 
 
 @pytest.yield_fixture
-def work_spec_class(backend, namespace_string):
+def work_spec_class(backend, namespace_string, tmpdir):
     if backend == 'memory':
         yield WorkSpec
     elif backend == 'sqlite':
         def builder(*args, **kwargs):
-            storage = SqliteJobStorage(':memory:')
+            storage = SqliteJobStorage(str(tmpdir.join('coordinate.sqlite')))
             kwargs['storage'] = storage
             sws = SqliteWorkSpec(*args, **kwargs)
             # redicilously constrained to exercise things in test
@@ -207,11 +207,9 @@ class NonClosingStringIO(StringIO):
         pass
 
 
-def test_job_server_snapshot(monkeypatch, xconfig):
+def test_job_server_snapshot(monkeypatch, xconfig, jobqueue_conf):
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 1.0)
-    # Don't use jobqueue_conf with this, it would lose in-memory sqlite
-    # between instances.
-    job_queue = JobQueue()
+    job_queue = JobQueue(jobqueue_conf)
 
     ws1 = {'name': 'ws1'}
     job_queue.set_work_spec(ws1)
@@ -224,7 +222,7 @@ def test_job_server_snapshot(monkeypatch, xconfig):
     snapf = NonClosingStringIO()
     job_queue._snapshot(snapf, snap_path=None)
 
-    job_queue = JobQueue()
+    job_queue = JobQueue(jobqueue_conf)
     # reset for reading
     snapblob = snapf.getvalue()
     logger.info('snapblob len=%s', len(snapblob))
@@ -245,9 +243,9 @@ def test_job_server_snapshot(monkeypatch, xconfig):
     assert wu_parts == ('ws1', 'wu2', wu2v)
 
 
-def test_job_server_logrecover(monkeypatch, xconfig):
+def test_job_server_logrecover(monkeypatch, xconfig, jobqueue_conf):
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 1.0)
-    job_queue = JobQueue()
+    job_queue = JobQueue(jobqueue_conf)
     job_queue.logfile = StringIO()
 
     ws1 = {'name': 'ws1'}
@@ -259,9 +257,7 @@ def test_job_server_logrecover(monkeypatch, xconfig):
 
     logblob = job_queue.logfile.getvalue()
 
-    logger.info('logblob %s', len(logblob))
-
-    job_queue = JobQueue()
+    job_queue = JobQueue(jobqueue_conf)
     job_queue._run_log(StringIO(logblob))
 
 
