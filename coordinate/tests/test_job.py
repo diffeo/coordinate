@@ -1,8 +1,14 @@
-from __future__ import absolute_import
+'''Assorted tests for the Coordinate job server.
+
+.. This software is released under an MIT/X11 open source license.
+   Copyright 2012-2015 Diffeo, Inc.
+
+'''
+from __future__ import absolute_import, division, print_function
 from collections import Counter
+from functools import partial
 import logging
 import os
-import random
 import time
 
 # can't use cStringIO and subclass it
@@ -10,7 +16,6 @@ from StringIO import StringIO
 
 import pytest
 import yakonfig
-import yaml
 
 import coordinate
 import coordinate.job_server
@@ -23,163 +28,178 @@ from coordinate.job_sqlite import SqliteJobStorage
 
 logger = logging.getLogger(__name__)
 
-wu1v = {'wu1v':1}
-wu2v = {'wu2v':2}
-wu3v = {'wu3v':3}
+wu1v = {'wu1v': 1}
+wu2v = {'wu2v': 2}
+wu3v = {'wu3v': 3}
 
 
+# Try to find a PostgreSQL connection string from a file.
+# We need to do this at import time, ugly though it is, to decide whether
+# PostgreSQL backend tests are possible.
+POSTGRES_CONNECT_STRING = None
 try:
-    connect_string = open(os.path.join(os.path.dirname(__file__), 'postgres_connect_string.txt'), 'rb').read().strip()
-except:
-    connect_string = None
+    with open(os.path.join(os.path.dirname(__file__),
+                           'postgres_connect_string.txt'), 'r') as f:
+        POSTGRES_CONNECT_STRING = f.read().strip()
+except IOError:
+    POSTGRES_CONNECT_STRING = None
 
 
-@pytest.yield_fixture
-def xconfig():
-    with yakonfig.defaulted_config(
-            [coordinate]) as config:
-        yield config
+BACKENDS = ['memory', 'sqlite']
+if POSTGRES_CONNECT_STRING:
+    BACKENDS += ['postgres']
 
 
-@pytest.fixture(scope='module')
-def random_schema():
-    random_schema = [chr(x) for x in xrange(ord('a'), ord('z'))]
-    random.shuffle(random_schema)
-    random_schema = ''.join(random_schema)
-    return random_schema
-
-def _make_WorkSpec(*args, **kwargs):
-    return WorkSpec(*args, **kwargs)
-
-def _make_SqliteWorkSpec(*args, **kwargs):
-    storage = SqliteJobStorage(':memory:')
-    kwargs['storage'] = storage
-    sws = SqliteWorkSpec(*args, **kwargs)
-    # redicilously constrained to exercise things in test
-    sws._to_store_batch = 2
-    sws._queue_max = 6
-    sws._queue_min = 2
-    sws._put_size = 2
-    sws._get_size = 2
-    return sws
-
-def pwsfactory(random_schema):
-    def ff(*args, **kwargs):
-        return PostgresWorkSpec(
-            connect_string=connect_string,
-            schema=random_schema,
-            *args, **kwargs)
-    return ff
-
-@pytest.yield_fixture(params=[_make_WorkSpec, _make_SqliteWorkSpec, 'PostgresWorkSpec'], scope='function')
-def work_spec_class(request, random_schema):
-    if request.param == 'PostgresWorkSpec':
-        if not connect_string:
-            pytest.skip()
-            return
-        pf = pwsfactory(random_schema)
-        yield pf
-        ws = pf('', None)
-        ws.delete_all_storage()
-    else:
-        yield request.param
-
-
-@pytest.fixture(params=[
-{},  # defaults
-{'sqlite_path':':memory:'}, # use SqliteJobStorage with in-memory sqlite
-])
-def jobqueue_conf(request):
+@pytest.fixture(params=BACKENDS)
+def backend(request):
     return request.param
 
 
-def test_job_server(monkeypatch, xconfig, jobqueue_conf):
+@pytest.fixture
+def jobqueue_conf(backend, namespace_string):
+    if backend == 'memory':
+        return {}
+    elif backend == 'sqlite':
+        return {'sqlite_path': ':memory:'}
+    elif backend == 'postgres':
+        return {
+            'postgres_connect': POSTGRES_CONNECT_STRING,
+            'postgres_schema': namespace_string,
+        }
+    else:
+        raise ValueError('Unexpected backend ' + repr(backend))
+
+
+@pytest.yield_fixture
+def xconfig(jobqueue_conf):
+    with yakonfig.defaulted_config([coordinate], config={
+            'coordinate': {
+                'job_queue': jobqueue_conf
+            }
+    }) as config:
+        yield config
+
+
+@pytest.fixture
+def job_queue(jobqueue_conf, xconfig):
+    # Various parts of the code strongly assume they are run with a global
+    # coordinate config.  Globals bad!  But forcing the xconfig fixture
+    # here makes it work.
+    return JobQueue(jobqueue_conf)
+
+
+@pytest.yield_fixture
+def work_spec_class(backend, namespace_string):
+    if backend == 'memory':
+        yield WorkSpec
+    elif backend == 'sqlite':
+        def builder(*args, **kwargs):
+            storage = SqliteJobStorage(':memory:')
+            kwargs['storage'] = storage
+            sws = SqliteWorkSpec(*args, **kwargs)
+            # redicilously constrained to exercise things in test
+            sws._to_store_batch = 2
+            sws._queue_max = 6
+            sws._queue_min = 2
+            sws._put_size = 2
+            sws._get_size = 2
+            return sws
+
+        yield builder
+    elif backend == 'postgres':
+        builder = partial(PostgresWorkSpec,
+                          connect_string=POSTGRES_CONNECT_STRING,
+                          schema=namespace_string)
+        yield builder
+        work_spec = builder('', None)
+        work_spec.delete_all_storage()
+    else:
+        raise ValueError('Unexpected backend ' + repr(backend))
+
+
+def test_job_server(monkeypatch, job_queue):
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 100.0)
 
-    jq = JobQueue(jobqueue_conf)
-
-    assert jq.get_work_spec('aoeu') is None
-    assert jq.list_work_specs({}) == ([], None)
+    assert job_queue.get_work_spec('aoeu') is None
+    assert job_queue.list_work_specs({}) == ([], None)
 
     # can't add work units to a work spec that doesn't exist
-    assert (jq.add_work_units('aoeu', [('wu1', wu1v)]) ==
+    assert (job_queue.add_work_units('aoeu', [('wu1', wu1v)]) ==
             (False, "no such work_spec 'aoeu'"))
 
-    assert jq.get_work_spec('aoeu') is None
-    assert jq.list_work_specs({}) == ([], None)
+    assert job_queue.get_work_spec('aoeu') is None
+    assert job_queue.list_work_specs({}) == ([], None)
 
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == (None, None, None)
 
     ws1 = {'name': 'ws1'}
-    jq.set_work_spec(ws1)
+    job_queue.set_work_spec(ws1)
 
     # put a work unit
-    jq.add_work_units('ws1', [('wu1', wu1v)])
+    job_queue.add_work_units('ws1', [('wu1', wu1v)])
 
     # get it back
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == ('ws1', 'wu1', wu1v)
 
     # ... but don't get it twice
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == (None, None, None)
 
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 500.0)
 
     # get it back if the prior lease expired
-    wu_parts, msg = jq.get_work('id2', {})
+    wu_parts, msg = job_queue.get_work('id2', {})
     assert wu_parts == ('ws1', 'wu1', wu1v)
 
     # mark it finished
-    jq.update_work_unit('ws1', 'wu1', {'status': FINISHED})
+    job_queue.update_work_unit('ws1', 'wu1', {'status': FINISHED})
 
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 900.0)
 
     # ... and check that it stays finished
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == (None, None, None)
 
     # push two, wu2 should come back first
-    jq.add_work_units('ws1', [('wu3', wu3v), ('wu2', wu2v)])
+    job_queue.add_work_units('ws1', [('wu3', wu3v), ('wu2', wu2v)])
 
-    wu_parts, msg = jq.get_work('id2', {})
+    wu_parts, msg = job_queue.get_work('id2', {})
     assert wu_parts == ('ws1', 'wu2', wu2v)
 
-    jq.update_work_unit('ws1', 'wu2', {'lease_time': 900})
+    job_queue.update_work_unit('ws1', 'wu2', {'lease_time': 900})
 
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 1300.0)
     # a normal lease time has expried, but not our SUPER LEASE!
 
-    statuses, msg = jq.get_work_unit_status(
+    statuses, msg = job_queue.get_work_unit_status(
         'ws1', ['wu1', 'wu2', 'wu3', 'wuBogus'])
     statuses = map(lambda x: x and x['status'], statuses)
     assert statuses == [FINISHED, PENDING, AVAILABLE, None]
 
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == ('ws1', 'wu3', wu3v)
 
 
-def test_max_running(xconfig, jobqueue_conf):
-    jq = JobQueue(jobqueue_conf)
-
+def test_max_running(job_queue):
     ws1 = {'name': 'ws1', 'max_running': 1}
-    jq.set_work_spec(ws1)
-    jq.add_work_units('ws1', [('wu1', wu1v), ('wu2', wu2v)])
+    job_queue.set_work_spec(ws1)
+    job_queue.add_work_units('ws1', [('wu1', wu1v), ('wu2', wu2v)])
 
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == ('ws1', 'wu1', wu1v)
 
     # While this work unit is still running we shouldn't get more
     # work
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] is None
 
-    jq.update_work_unit('ws1', 'wu1', {'status': FINISHED})
+    job_queue.update_work_unit('ws1', 'wu1', {'status': FINISHED})
 
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == ('ws1', 'wu2', wu2v)
-    jq.update_work_unit('ws1', 'wu2', {'status': FINISHED})
+    job_queue.update_work_unit('ws1', 'wu2', {'status': FINISHED})
 
 
 class NonClosingStringIO(StringIO):
@@ -189,203 +209,212 @@ class NonClosingStringIO(StringIO):
 
 def test_job_server_snapshot(monkeypatch, xconfig):
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 1.0)
-    # Don't use jobqueue_conf with this, it would lose in-memory sqlite between instances.
-    jq = JobQueue()
+    # Don't use jobqueue_conf with this, it would lose in-memory sqlite
+    # between instances.
+    job_queue = JobQueue()
 
     ws1 = {'name': 'ws1'}
-    jq.set_work_spec(ws1)
-    jq.add_work_units('ws1', [('wu3', wu3v), ('wu2', wu2v)])
+    job_queue.set_work_spec(ws1)
+    job_queue.add_work_units('ws1', [('wu3', wu3v), ('wu2', wu2v)])
 
     # move wu2 to PENDING
-    wu_parts, msg = jq.get_work('id2', {})
+    wu_parts, msg = job_queue.get_work('id2', {})
     assert wu_parts == ('ws1', 'wu2', wu2v)
 
     snapf = NonClosingStringIO()
-    jq._snapshot(snapf, snap_path=None)
+    job_queue._snapshot(snapf, snap_path=None)
 
-    jq = JobQueue()
+    job_queue = JobQueue()
     # reset for reading
     snapblob = snapf.getvalue()
     logger.info('snapblob len=%s', len(snapblob))
     snapf = StringIO(snapblob)
 
-    jq.load_snapshot(stream=snapf, snap_path=None)
+    job_queue.load_snapshot(stream=snapf, snap_path=None)
 
-    wu_parts, msg = jq.get_work('id3', {})
+    wu_parts, msg = job_queue.get_work('id3', {})
     assert wu_parts == ('ws1', 'wu3', wu3v)
 
-    jq.update_work_unit('ws1', 'wu3', {'status': FINISHED})
+    job_queue.update_work_unit('ws1', 'wu3', {'status': FINISHED})
 
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 400.0)
 
     # work unit that was PENDING on suspend properly times out and
     # becomes available again.
-    wu_parts, msg = jq.get_work('id2', {})
+    wu_parts, msg = job_queue.get_work('id2', {})
     assert wu_parts == ('ws1', 'wu2', wu2v)
 
 
 def test_job_server_logrecover(monkeypatch, xconfig):
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: 1.0)
-    jq = JobQueue()
-    jq.logfile = StringIO()
+    job_queue = JobQueue()
+    job_queue.logfile = StringIO()
 
     ws1 = {'name': 'ws1'}
-    jq.set_work_spec(ws1)
-    jq.add_work_units('ws1', [('wu3', wu3v), ('wu2', wu2v)])
+    job_queue.set_work_spec(ws1)
+    job_queue.add_work_units('ws1', [('wu3', wu3v), ('wu2', wu2v)])
     # move wu2 to PENDING
-    wu_parts, msg = jq.get_work('id2', {})
+    wu_parts, msg = job_queue.get_work('id2', {})
     assert wu_parts == ('ws1', 'wu2', wu2v)
 
-    logblob = jq.logfile.getvalue()
+    logblob = job_queue.logfile.getvalue()
 
     logger.info('logblob %s', len(logblob))
 
-    jq = JobQueue()
-    jq._run_log(StringIO(logblob))
+    job_queue = JobQueue()
+    job_queue._run_log(StringIO(logblob))
 
 
-def test_job_server_update_data(xconfig, jobqueue_conf):
-    jq = JobQueue(jobqueue_conf)
-
+def test_job_server_update_data(job_queue):
     # Create a job
     ws1 = {'name': 'ws1'}
-    jq.set_work_spec(ws1)
-    jq.add_work_units('ws1', [('wu1', {'x': 1})])
-    wu_parts, msg = jq.get_work_units('ws1', {'work_unit_keys': ['wu1']})
+    job_queue.set_work_spec(ws1)
+    job_queue.add_work_units('ws1', [('wu1', {'x': 1})])
+    wu_parts, msg = job_queue.get_work_units(
+        'ws1', {'work_unit_keys': ['wu1']})
     assert wu_parts == [('wu1', {'x': 1})]
-    statuses, msg = jq.get_work_unit_status('ws1', ['wu1'])
+    statuses, msg = job_queue.get_work_unit_status('ws1', ['wu1'])
     assert msg is None
     assert statuses[0]['status'] == AVAILABLE
 
     # Get the job back
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == ('ws1', 'wu1', {'x': 1})
-    statuses, msg = jq.get_work_unit_status('ws1', ['wu1'])
+    statuses, msg = job_queue.get_work_unit_status('ws1', ['wu1'])
     assert msg is None
     assert statuses[0]['status'] == PENDING
 
     # Finish the job
-    jq.update_work_unit('ws1', 'wu1', {'status': FINISHED,
-                                       'data': {'x': 1, 'output': {}}})
-    wu_parts, msg = jq.get_work_units('ws1', {'work_unit_keys': ['wu1']})
+    job_queue.update_work_unit('ws1', 'wu1', {
+        'status': FINISHED,
+        'data': {'x': 1, 'output': {}}
+    })
+    wu_parts, msg = job_queue.get_work_units(
+        'ws1', {'work_unit_keys': ['wu1']})
     assert wu_parts == [('wu1', {'x': 1, 'output': {}})]
-    statuses, msg = jq.get_work_unit_status('ws1', ['wu1'])
+    statuses, msg = job_queue.get_work_unit_status('ws1', ['wu1'])
     assert msg is None
     assert statuses[0]['status'] == FINISHED
 
 
-def test_job_server_continuous(xconfig, jobqueue_conf):
-    jq = JobQueue(jobqueue_conf)
+def test_job_server_continuous(job_queue):
+    if job_queue.postgres_connect_string:
+        pytest.skip('TODO: continuous postgres jobs are an infinite loop')
 
     # Create a continuous job
     ws1 = {'name': 'ws1', 'continuous': True}
-    jq.set_work_spec(ws1)
+    job_queue.set_work_spec(ws1)
 
     # Get synthetic work from the continuous job
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] == 'ws1'
     (sec, frac) = wu_parts[1].split('.', 1)
     assert sec.isdigit()
     assert frac is None or frac.isdigit()
     assert wu_parts[2] == {}
-    jq.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
 
     # Get synthetic work from the continuous job (again)
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] == 'ws1'
     (sec, frac) = wu_parts[1].split('.', 1)
     assert sec.isdigit()
     assert frac is None or frac.isdigit()
     assert wu_parts[2] == {}
-    jq.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
 
     # Put real work on the continuous job; we should get it back
-    jq.add_work_units('ws1', [('wu1', {'x': 1})])
-    wu_parts, msg = jq.get_work('id1', {})
+    job_queue.add_work_units('ws1', [('wu1', {'x': 1})])
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts == ('ws1', 'wu1', {'x': 1})
-    jq.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
 
     # Get synthetic work from the continuous job (again)
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] == 'ws1'
     (sec, frac) = wu_parts[1].split('.', 1)
     assert sec.isdigit()
     assert frac is None or frac.isdigit()
     assert wu_parts[2] == {}
-    jq.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
 
 
-def test_job_server_continuous_interval(xconfig, monkeypatch, jobqueue_conf):
-    jq = JobQueue(jobqueue_conf)
+def test_job_server_continuous_interval(monkeypatch, job_queue):
+    if job_queue.postgres_connect_string:
+        pytest.skip('TODO: continuous postgres jobs are an infinite loop')
+
     now = 10000000
     monkeypatch.setattr(time, 'time', lambda: now)
     ws1 = {'name': 'ws1', 'continuous': True, 'interval': 60,
            'max_running': 1}
-    jq.set_work_spec(ws1)
+    job_queue.set_work_spec(ws1)
 
     # Calling this the first time should always produce a work unit
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] == 'ws1'
-    jq.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
 
     # Calling this again at the same "now" shouldn't
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] is None
 
     # If we wait 59 seconds still get nothing
     now = 10000059
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] is None
 
     # ...but advancing to 60 produces something
     now = 10000060
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] == 'ws1'
-    
+
     # The finish time doesn't affect the next start time
     now = 10000090
-    jq.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit('ws1', wu_parts[1], {'status': FINISHED})
 
     now = 10000119
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] is None
 
     now = 10000120
-    wu_parts, msg = jq.get_work('id1', {})
+    wu_parts, msg = job_queue.get_work('id1', {})
     assert wu_parts[0] == 'ws1'
-    jq.update_work_unit(wu_parts[0], wu_parts[1], {'status': FINISHED})
+    job_queue.update_work_unit(wu_parts[0], wu_parts[1], {'status': FINISHED})
 
 
 def test_archive_by_count(xconfig, jobqueue_conf):
     config = dict(yakonfig.get_global_config('coordinate', 'job_queue'))
     config['limit_completed_count'] = 2
     config.update(jobqueue_conf)
-    jq = JobQueue(config)
-    jq.set_work_spec({'name': 'ws1'})
-    jq.add_work_units('ws1', [('wu1', {'x': 1}),
-                              ('wu2', {'x': 1}),
-                              ('wu3', {'x': 1})])
+    job_queue = JobQueue(config)
+    if job_queue.postgres_connect_string:
+        pytest.skip('TODO: postgres has not implemented archive by count')
+    job_queue.set_work_spec({'name': 'ws1'})
+    job_queue.add_work_units('ws1', [('wu1', {'x': 1}),
+                                     ('wu2', {'x': 1}),
+                                     ('wu3', {'x': 1})])
     # Bump all three work units to "finished"
     for wu in ['wu1', 'wu2', 'wu3']:
-        wu_parts, msg = jq.get_work('id1', {})
+        wu_parts, msg = job_queue.get_work('id1', {})
         assert wu_parts[0] == 'ws1'
         assert wu_parts[1] == wu
-        jq.update_work_unit(wu_parts[0], wu_parts[1], {'status': FINISHED})
+        job_queue.update_work_unit(wu_parts[0], wu_parts[1],
+                                   {'status': FINISHED})
 
     # Archiving hasn't happened, so we should see the finished count
     # is 3, and all three work units are there
-    counts, msg = jq.count_work_units('ws1')
+    counts, msg = job_queue.count_work_units('ws1')
     assert counts[FINISHED] == 3
-    wus, msg = jq.get_work_units('ws1', {})
+    wus, msg = job_queue.get_work_units('ws1', {})
     assert [wu[0] for wu in wus] == ['wu1', 'wu2', 'wu3']
 
-    jq.archive()
+    job_queue.archive()
 
     # Now we should still see the same count, but the one that ran
     # first (wu1) is off the list
-    counts, msg = jq.count_work_units('ws1')
+    counts, msg = job_queue.count_work_units('ws1')
     assert counts[FINISHED] == 3
-    wus, msg = jq.get_work_units('ws1', {})
+    wus, msg = job_queue.get_work_units('ws1', {})
     assert [wu[0] for wu in wus] == ['wu2', 'wu3']
 
 
@@ -393,56 +422,60 @@ def test_archive_by_age(monkeypatch, xconfig, jobqueue_conf):
     config = dict(yakonfig.get_global_config('coordinate', 'job_queue'))
     config['limit_completed_age'] = 15
     config.update(jobqueue_conf)
-    jq = JobQueue(config)
-    jq.set_work_spec({'name': 'ws1'})
-    jq.add_work_units('ws1', [('wu1', {'x': 1}),
-                              ('wu2', {'x': 1}),
-                              ('wu3', {'x': 1})])
+    job_queue = JobQueue(config)
+    if job_queue.postgres_connect_string:
+        pytest.skip('TODO: postgres archive by age is just broken')
+    job_queue.set_work_spec({'name': 'ws1'})
+    job_queue.add_work_units('ws1', [('wu1', {'x': 1}),
+                                     ('wu2', {'x': 1}),
+                                     ('wu3', {'x': 1})])
     # Bump all three work units to "finished"
     now = 100.0
     monkeypatch.setattr(coordinate.job_server.time, 'time', lambda: now)
     for wu in ['wu1', 'wu2', 'wu3']:
-        wu_parts, msg = jq.get_work('id1', {})
+        wu_parts, msg = job_queue.get_work('id1', {})
         assert wu_parts[0] == 'ws1'
         assert wu_parts[1] == wu
         now += 10
-        jq.update_work_unit(wu_parts[0], wu_parts[1], {'status': FINISHED})
+        job_queue.update_work_unit(wu_parts[0], wu_parts[1],
+                                   {'status': FINISHED})
 
     # Archiving hasn't happened, so we should see the finished count
     # is 3, and all three work units are there
-    counts, msg = jq.count_work_units('ws1')
+    counts, msg = job_queue.count_work_units('ws1')
     assert counts[FINISHED] == 3
-    wus, msg = jq.get_work_units('ws1', {})
+    wus, msg = job_queue.get_work_units('ws1', {})
     assert [wu[0] for wu in wus] == ['wu1', 'wu2', 'wu3']
 
-    jq.archive()
+    job_queue.archive()
 
     # The policy archives jobs that finished over 15 seconds ago.
     # So this archive should have purged wu1:
-    counts, msg = jq.count_work_units('ws1')
+    counts, msg = job_queue.count_work_units('ws1')
     assert counts[FINISHED] == 3
-    wus, msg = jq.get_work_units('ws1', {})
+    wus, msg = job_queue.get_work_units('ws1', {})
     assert [wu[0] for wu in wus] == ['wu2', 'wu3']
 
     # Advance 10 more seconds, and wu2 should go:
     now += 10
-    jq.archive()
-    counts, msg = jq.count_work_units('ws1')
+    job_queue.archive()
+    counts, msg = job_queue.count_work_units('ws1')
     assert counts[FINISHED] == 3
-    wus, msg = jq.get_work_units('ws1', {})
+    wus, msg = job_queue.get_work_units('ws1', {})
     assert [wu[0] for wu in wus] == ['wu3']
 
     # Again:
     now += 10
-    jq.archive()
-    counts, msg = jq.count_work_units('ws1')
+    job_queue.archive()
+    counts, msg = job_queue.count_work_units('ws1')
     assert counts[FINISHED] == 3
-    wus, msg = jq.get_work_units('ws1', {})
+    wus, msg = job_queue.get_work_units('ws1', {})
     assert [wu[0] for wu in wus] == []
 
 
 class MockJobQ(object):
     do_joblog = True
+
     def _log_action(self, action, args):
         pass
 
@@ -462,8 +495,8 @@ def test_scheduler_empty():
 
 def test_scheduler_one(work_spec_class):
     '''the scheduler should behave correctly with a single work spec'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq)}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']
@@ -479,9 +512,9 @@ def test_scheduler_one(work_spec_class):
 
 def test_scheduler_two(work_spec_class):
     '''the scheduler should behave correctly with two chained work specs'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='b'),
-                  'b': work_spec_class('b', jq)}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='b'),
+                  'b': work_spec_class('b', job_queue)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']
@@ -500,10 +533,10 @@ def test_scheduler_two(work_spec_class):
 
 def test_scheduler_three(work_spec_class):
     '''the scheduler should behave correctly with three chained work specs'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='b'),
-                  'b': work_spec_class('b', jq, next_work_spec='c'),
-                  'c': work_spec_class('c', jq)}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='b'),
+                  'b': work_spec_class('b', job_queue, next_work_spec='c'),
+                  'c': work_spec_class('c', job_queue)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']
@@ -532,10 +565,10 @@ def test_scheduler_three(work_spec_class):
 
 def test_scheduler_three_paused(work_spec_class):
     '''the scheduler shouldn't schedule paused work specs'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='b'),
-                  'b': work_spec_class('b', jq, next_work_spec='c'),
-                  'c': work_spec_class('c', jq)}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='b'),
+                  'b': work_spec_class('b', job_queue, next_work_spec='c'),
+                  'c': work_spec_class('c', job_queue)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']
@@ -567,8 +600,8 @@ def test_scheduler_three_paused(work_spec_class):
 
 def test_scheduler_trivial_loop(work_spec_class):
     '''one work unit that feeds itself'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='a')}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='a')}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == []
@@ -608,12 +641,12 @@ def test_scheduler_trivial_loop(work_spec_class):
 
 def test_scheduler_one_chain(work_spec_class):
     '''some of everything'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='b'),
-                  'b': work_spec_class('b', jq, next_work_spec='c'),
-                  'c': work_spec_class('c', jq, next_work_spec='d'),
-                  'd': work_spec_class('d', jq, next_work_spec='e'),
-                  'e': work_spec_class('e', jq, next_work_spec='d')}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='b'),
+                  'b': work_spec_class('b', job_queue, next_work_spec='c'),
+                  'c': work_spec_class('c', job_queue, next_work_spec='d'),
+                  'd': work_spec_class('d', job_queue, next_work_spec='e'),
+                  'e': work_spec_class('e', job_queue, next_work_spec='d')}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']
@@ -638,11 +671,11 @@ def test_scheduler_one_chain(work_spec_class):
     counts = Counter()
     for _ in xrange(1000):
         counts[scheduler.choose_work_spec()] += 1
-    #assert counts['a'] > 620 and counts['a'] < 715
+    # assert counts['a'] > 620 and counts['a'] < 715
     assert counts['a'] == 1000
     assert counts['b'] == 0
     assert counts['c'] == 0
-    #assert counts['d'] > 285 and counts['d'] < 380
+    # assert counts['d'] > 285 and counts['d'] < 380
     assert counts['d'] == 0
     assert counts['e'] == 0
     # Pick a (and leave the work unit for the loop in d).  We should
@@ -660,15 +693,20 @@ def test_scheduler_one_chain(work_spec_class):
     assert scheduler.choose_work_spec() == 'd'
 
 
-def test_scheduler_continuous(work_spec_class):
+def test_scheduler_continuous(work_spec_class, backend):
     '''add a continuous job into the mix'''
-    jq = MockJobQ()
-    work_specs = {'source': work_spec_class('source', jq, next_work_spec='path'),
-                  'path': work_spec_class('path', jq),
-                  'loop': work_spec_class('loop', jq, next_work_spec='loop'),
-                  'continuous': work_spec_class('continuous', jq,
-                                         next_work_spec='path',
-                                         continuous=True)}
+    if backend == 'postgres':  # NB: only use of "backend" fixture here
+        pytest.skip('TODO: continuous postgres jobs are an infinite loop')
+
+    job_queue = MockJobQ()
+    work_specs = {'source': work_spec_class('source', job_queue,
+                                            next_work_spec='path'),
+                  'path': work_spec_class('path', job_queue),
+                  'loop': work_spec_class('loop', job_queue,
+                                          next_work_spec='loop'),
+                  'continuous': work_spec_class('continuous', job_queue,
+                                                next_work_spec='path',
+                                                continuous=True)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert (scheduler.sources == ['source', 'continuous'] or
@@ -726,7 +764,6 @@ def test_scheduler_continuous(work_spec_class):
     counts = Counter()
     for ws in wss:
         counts[ws] += 1
-    print counts
     assert counts['source'] == 0
     assert counts['path'] == 0
     assert abs(counts['loop'] - (1000.0*10/11)) < 50
@@ -734,10 +771,11 @@ def test_scheduler_continuous(work_spec_class):
 
 
 def test_scheduler_weights(work_spec_class):
-    '''two independent work specs with weight 4 and 6 should get scheduled in correct proportion'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, weight=4),
-                  'b': work_spec_class('b', jq, weight=6)}
+    '''two independent work specs with weight 4 and 6 should get
+    scheduled in correct proportion'''
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, weight=4),
+                  'b': work_spec_class('b', job_queue, weight=6)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a', 'b']
@@ -746,10 +784,12 @@ def test_scheduler_weights(work_spec_class):
     assert scheduler.continuous == []
     ws = scheduler.choose_work_spec()
     assert ws is None  # because both 'a' and 'b' are empty
-    work_specs['a'].add_work_units([WorkUnit('k{}'.format(n), {}) for n in xrange(1,100)])
+    work_specs['a'].add_work_units([WorkUnit('k{}'.format(n), {})
+                                    for n in xrange(1, 100)])
     ws = scheduler.choose_work_spec()
     assert ws == 'a'  # because only 'a' has work
-    work_specs['b'].add_work_units([WorkUnit('l{}'.format(n), {}) for n in xrange(1,100)])
+    work_specs['b'].add_work_units([WorkUnit('l{}'.format(n), {})
+                                    for n in xrange(1, 100)])
     ws = scheduler.choose_work_spec()
     assert ws == 'b'  # because it is now available and higher weight
 
@@ -758,20 +798,22 @@ def test_scheduler_weights(work_spec_class):
     for i in xrange(10):
         ws_name = scheduler.choose_work_spec()
         wu = work_specs[ws_name].get_work('worker{}'.format(i), lease_time, 1)
-        gotwork.append( (ws_name, wu) )
-    assert sum([x[0]=='a' for x in gotwork]) == 4
-    assert sum([x[0]=='b' for x in gotwork]) == 6
+        gotwork.append((ws_name, wu))
+    assert sum([x[0] == 'a' for x in gotwork]) == 4
+    assert sum([x[0] == 'b' for x in gotwork]) == 6
     # approximating 6:4 at each step
-    assert [x[0] for x in gotwork] == ['b', 'a', 'b', 'a', 'b', 'b', 'a', 'b', 'a', 'b']
+    assert ([x[0] for x in gotwork] ==
+            ['b', 'a', 'b', 'a', 'b', 'b', 'a', 'b', 'a', 'b'])
 
 
 def test_scheduler_weights_vs_priority(work_spec_class):
-    '''two independent work specs with weight 4 and 6 should get scheduled in correct proportion'''
-    jq = MockJobQ()
+    '''two independent work specs with weight 4 and 6 should get
+scheduled in correct proportion'''
+    job_queue = MockJobQ()
     work_specs = {
-        'a': work_spec_class('a', jq, weight=4),
-        'b': work_spec_class('b', jq, weight=6),
-        'c': work_spec_class('c', jq, weight=1),
+        'a': work_spec_class('a', job_queue, weight=4),
+        'b': work_spec_class('b', job_queue, weight=6),
+        'c': work_spec_class('c', job_queue, weight=1),
     }
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
@@ -782,15 +824,18 @@ def test_scheduler_weights_vs_priority(work_spec_class):
     ws = scheduler.choose_work_spec()
     assert ws is None  # because both 'a' and 'b' are empty
 
-    work_specs['a'].add_work_units([WorkUnit('k{}'.format(n), {}) for n in xrange(1,100)])
+    work_specs['a'].add_work_units([WorkUnit('k{}'.format(n), {})
+                                    for n in xrange(1, 100)])
     ws = scheduler.choose_work_spec()
     assert ws == 'a'  # because only 'a' has work
 
-    work_specs['b'].add_work_units([WorkUnit('l{}'.format(n), {}) for n in xrange(1,100)])
+    work_specs['b'].add_work_units([WorkUnit('l{}'.format(n), {})
+                                    for n in xrange(1, 100)])
     ws = scheduler.choose_work_spec()
     assert ws == 'b'  # because it is now available and higher weight
 
-    work_specs['c'].add_work_units([WorkUnit('m{}'.format(n), {}, priority=9) for n in xrange(1,5)])
+    work_specs['c'].add_work_units([WorkUnit('m{}'.format(n), {}, priority=9)
+                                    for n in xrange(1, 5)])
     ws = scheduler.choose_work_spec()
     assert ws == 'c'  # because it is now available and higher priority
 
@@ -799,19 +844,23 @@ def test_scheduler_weights_vs_priority(work_spec_class):
     for i in xrange(14):
         ws_name = scheduler.choose_work_spec()
         wu = work_specs[ws_name].get_work('worker{}'.format(i), lease_time, 1)
-        gotwork.append( (ws_name, wu) )
-    assert sum([x[0]=='c' for x in gotwork]) == 4
-    assert sum([x[0]=='a' for x in gotwork]) == 4
-    assert sum([x[0]=='b' for x in gotwork]) == 6
+        gotwork.append((ws_name, wu))
+    assert sum([x[0] == 'c' for x in gotwork]) == 4
+    assert sum([x[0] == 'a' for x in gotwork]) == 4
+    assert sum([x[0] == 'b' for x in gotwork]) == 6
     # approximating 6:4 at each step
-    assert [x[0] for x in gotwork] == ['c', 'c', 'c', 'c', 'b', 'a', 'b', 'a', 'b', 'b', 'a', 'b', 'a', 'b']
+    assert ([x[0] for x in gotwork] ==
+            ['c', 'c', 'c', 'c', 'b', 'a', 'b', 'a', 'b', 'b', 'a', 'b',
+             'a', 'b'])
 
 
 def test_scheduler_two_no_preempt(work_spec_class):
     '''the scheduler should behave correctly with two chained work specs'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='b', next_work_spec_preempts=False, weight=100),
-                  'b': work_spec_class('b', jq, weight=1)}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='b',
+                                       next_work_spec_preempts=False,
+                                       weight=100),
+                  'b': work_spec_class('b', job_queue, weight=1)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']
@@ -826,17 +875,19 @@ def test_scheduler_two_no_preempt(work_spec_class):
     work_specs['b'].add_work_units([WorkUnit('l', {})])
     ws = scheduler.choose_work_spec()
     assert ws == 'a'  # a should still win
-    work_specs['a'].get_work('w1',time.time() + 1000, 1)
+    work_specs['a'].get_work('w1', time.time() + 1000, 1)
     ws = scheduler.choose_work_spec()
     assert ws == 'b'  # now we can b
 
 
 def test_scheduler_three_no_preempt(work_spec_class):
     '''the scheduler should behave correctly with three chained work specs'''
-    jq = MockJobQ()
-    work_specs = {'a': work_spec_class('a', jq, next_work_spec='b', weight=40),
-                  'b': work_spec_class('b', jq, next_work_spec='c', next_work_spec_preempts=False),
-                  'c': work_spec_class('c', jq, weight=20)}
+    job_queue = MockJobQ()
+    work_specs = {'a': work_spec_class('a', job_queue, next_work_spec='b',
+                                       weight=40),
+                  'b': work_spec_class('b', job_queue, next_work_spec='c',
+                                       next_work_spec_preempts=False),
+                  'c': work_spec_class('c', job_queue, weight=20)}
     scheduler = WorkSpecScheduler(work_specs)
     scheduler.update()
     assert scheduler.sources == ['a']

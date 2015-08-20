@@ -81,7 +81,7 @@ BEGIN
   UPDATE {schema}.old_counts SET count = count + xc FROM (SELECT spec xp, status xs, COUNT(wu.status) xc FROM {schema}.wu WHERE {schema}.wu.finishtime < expire_time GROUP BY xp, xs) sq WHERE {schema}.old_counts.spec = sq.xp AND {schema}.old_counts.status = sq.xs;
 
   -- delete old work unit records
-  DELETE FROM wu WHERE finishtime < expire_time;
+  DELETE FROM {schema}.wu WHERE finishtime < expire_time;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -204,9 +204,11 @@ class PostgresWorkSpec(WorkSpec):
         if self._dbinitted:
             return
         with conn.cursor() as cursor:
-            cursor.execute('CREATE SCHEMA IF NOT EXISTS {schema}'.format(schema=self._schema))
+            cursor.execute('CREATE SCHEMA IF NOT EXISTS {schema}'
+                           .format(schema=self._schema))
             cursor.execute(setup_sql.format(schema=self._schema))
-            cursor.execute('SELECT {schema}.init_coordinate_tables()'.format(schema=self._schema))
+            cursor.execute('SELECT {schema}.init_coordinate_tables()'
+                           .format(schema=self._schema))
             self._dbinitted = True
 
     def delete_all_storage(self):
@@ -435,8 +437,14 @@ class PostgresWorkSpec(WorkSpec):
                 for wuk in work_unit_keys:
                     # TODO: many queries is slow, make big query, but
                     # can't return results from cursor.executemany()
-                    cursor.execute('SELECT wudata, status, timeout, worker FROM {schema}.wu WHERE spec = %s AND wukey = %s'.format(schema=self._schema), (self.name, psycopg2.Binary(wuk)))
+                    cursor.execute('SELECT wudata, status, timeout, worker '
+                                   'FROM {schema}.wu '
+                                   'WHERE spec = %s AND wukey = %s'
+                                   .format(schema=self._schema),
+                                   (self.name, psycopg2.Binary(wuk)))
+                    found = False
                     for row in cursor:
+                        found = True
                         data = cbor.loads(bytes(row[0]))
                         status = row[1]
                         timeout = row[2]
@@ -447,6 +455,8 @@ class PostgresWorkSpec(WorkSpec):
                         if 'traceback' in data:
                             sdict['traceback'] = data['traceback']
                         out.append(sdict)
+                    if not found:
+                        out.append(None)
         return out
 
     def get_work(self, worker_id, lease_time, max_jobs):
@@ -472,7 +482,11 @@ class PostgresWorkSpec(WorkSpec):
         with self.mutex:
             with self._cursor() as cursor:
                 self._expire_stale_leases(cursor)
-                cursor.execute('SELECT * FROM {schema}.get_work(%s, %s, %s, %s)'.format(schema=self._schema), (self.name, max_jobs, psycopg2.Binary(worker_id), long(lease_time)))
+                cursor.execute('SELECT * '
+                               'FROM {schema}.get_work(%s, %s, %s, %s)'
+                               .format(schema=self._schema),
+                               (self.name, max_jobs,
+                                psycopg2.Binary(worker_id), long(lease_time)))
                 for row in cursor:
                     wukey = bytes(row[0])
                     wudata = cbor.loads(bytes(row[1]))
@@ -484,13 +498,16 @@ class PostgresWorkSpec(WorkSpec):
     def archive_work_units(self, max_count, max_age):
         '''Drop data of FINISHED and FAILED work units. Keep count of them.'''
         if max_age is None:
-            logger.warn('TODO: implement keeping a maximum count of records, currently only has cutoff time')
+            logger.warn('TODO: implement keeping a maximum count of records, '
+                        'currently only has cutoff time')
             return
         with self.mutex:
             with self._cursor() as cursor:
                 # things that finished before cutoff_time will be forgotten
                 cutoff_time = time.time() - max_age
-                cursor.execute('SELECT {schema}.archive_counts(%s)'.format(schema=self._schema), (cutoff_time,))
+                cursor.execute('SELECT {schema}.archive_counts(%s)'
+                               .format(schema=self._schema),
+                               (long(cutoff_time),))
 
     def count_work_units(self):
         "Return dictionary by status which is sum of current and archived work unit counts."
@@ -504,7 +521,7 @@ class PostgresWorkSpec(WorkSpec):
                 cursor.execute('SELECT status, count FROM {schema}.old_counts WHERE spec = %s'.format(schema=self._schema), (self.name,))
                 for row in cursor:
                     out[row[0]] = out.get(row[0], 0) + row[1]
-        return out
+        return out, None
 
     def sched_data(self):
         '''
