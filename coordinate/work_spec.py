@@ -406,6 +406,10 @@ class WorkSpec(object):
             max_jobs = nmin(max_jobs, self.max_getwork)
             out = []
             notdone = True
+            now = time.time()
+            if self.continuous and self.interval and \
+                    now < self.next_continuous:
+                return None
             while notdone:
                 work_unit = None
                 if ((self.max_running is not None and
@@ -415,16 +419,12 @@ class WorkSpec(object):
                 elif self.queue:
                     # There is work to do, pull something from it
                     work_unit = heapq.heappop(self.queue)
-                elif self.continuous:
+                elif self.continuous and now >= self.next_continuous:
                     # No work to do, but we can create sythetic work units
-                    now = time.time()
-                    if now >= self.next_continuous:
-                        work_unit = WorkUnit(str(time.time()), {},
-                                             priority=PRI_GENERATED)
-                        self._add_work_units([work_unit], push=False)
-                        if self.interval is not None:
-                            self.next_continuous = now + self.interval
-                        notdone = True # only generate one at a time
+                    work_unit = WorkUnit(str(time.time()), {},
+                                         priority=PRI_GENERATED)
+                    self._add_work_units([work_unit], push=False)
+                    notdone = True  # only generate one at a time
 
                 # We get no work out of this if
                 # (a) max number of concurrent pending jobs; or
@@ -436,9 +436,12 @@ class WorkSpec(object):
 
                 if work_unit is None:
                     break
-                out.append(self._update_work_wu(worker_id, lease_time, work_unit))
+                out.append(
+                    self._update_work_wu(worker_id, lease_time, work_unit))
                 if len(out) >= max_jobs:
                     break
+            if len(out) > 0 and self.interval is not None:
+                self.next_continuous = now + self.interval
             return out
 
     def _update_work_wu(self, worker_id, lease_time, wu):
@@ -884,6 +887,11 @@ class WorkSpec(object):
         '''
         self._expire_stale_leases()
         self._repopulate_queue()
+        if (self.continuous and
+                self.interval and
+                time.time() < self.next_continuous):
+            return False
+
         if ((self.max_running is not None and
              len(self.pending_queue) >= self.max_running)):
             # Hit maximum number of concurrent pending jobs
