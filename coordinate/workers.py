@@ -860,11 +860,9 @@ class ForkWorker(Worker):
             # This will cause the child to die, and do_some_work will
             # reap it; but we'd also like the job to fail if possible
             for unit in wul:
-                if unit.data is None:
-                    logger.critical('how did wu.data become: %r', unit.data)
-                else:
+                if unit.data is not None:
                     unit.data['traceback'] = 'job expired'
-                unit.fail(exc=Exception('job expired'))
+                unit.fail()
 
     def stop_gracefully(self):
         '''Refuse to start more processes.
