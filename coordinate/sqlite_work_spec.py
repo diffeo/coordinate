@@ -249,7 +249,7 @@ class SqliteWorkSpec(WorkSpec):
         super(SqliteWorkSpec, self)._del_work_units_keys(
             delkeys, filterstate)
         if filterstate is None or filterstate == AVAILABLE:
-            self.storage.del_work_units(self.name, delkeys, filterstate)
+            self.storage.del_work_units(self.name, delkeys)
         # warning, not returning count of how many things actually
         # existed and were deleted. shrug?
         return len(delkeys), None
