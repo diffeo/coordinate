@@ -56,7 +56,6 @@ class WorkUnit(object):
     '''
     def __init__(self, taskmaster, work_spec_name, key, data, worker_id=None,
                  expires=None, default_lease_time=900):
-        logger.debug('jobd WorkUnit %s:%r', key, data)
         #: :class:`TaskMaster` connected to this unit
         self.taskmaster = taskmaster
         #: Name of the work spec
@@ -109,8 +108,6 @@ class WorkUnit(object):
     def _do_update(self, **kwargs):
         if self.data != self._old_data:
             kwargs['data'] = self.data
-        else:
-            logger.debug('data unchanged for wu key=%s', self.key)
         rc = self.taskmaster.update_work_unit(self.work_spec_name,
                                               self.key, **kwargs)
         if self.data != self._old_data:
@@ -122,8 +119,6 @@ class WorkUnit(object):
         if lease_time is None:
             lease_time = self.default_lease_time
         if lease_time > MAX_LEASE_SECONDS:
-            logger.debug('limiting lease to %d seconds (requested %d)',
-                         MAX_LEASE_SECONDS, lease_time)
             lease_time = MAX_LEASE_SECONDS
         return self._do_update(lease_time=lease_time)
 
@@ -138,8 +133,6 @@ class WorkUnit(object):
         return self._do_update(status=FAILED)
 
     def run(self):
-        logger.debug('jobd WorkUnit run %s:%r, spec=%r',
-                     self.key, self.data, self._spec_cache)
         return workunit_run(self, self.spec)
 
 
@@ -323,7 +316,7 @@ class TaskMaster(CborRpcClient):
         ok, message = self._rpc('add_work_units',
                                 (work_spec_name, work_unit_key_vals))
         if message:
-            logger.info('add_work_units: %s', message)
+            logger.debug('add_work_units: %s', message)
         return ok
 
     def count_work_units(self, work_spec_name):
@@ -623,7 +616,7 @@ class TaskMaster(CborRpcClient):
             options['max_jobs'] = max_jobs
         keydata, message = self._rpc('get_work', (worker_id, options))
         if message:
-            logger.info('get_work: %s', message)
+            logger.debug('get_work: %s', message)
         if (max_jobs is None) or (max_jobs == 1):
             if (keydata[0] is None) or (keydata[1] is None):
                 return None
@@ -712,7 +705,7 @@ class TaskMaster(CborRpcClient):
         '''
         wudict, msg = self._rpc('get_child_work_units', (worker_id,))
         if msg:
-            logger.error('get_child_work_units: %r', msg)
+            logger.debug('get_child_work_units: %r', msg)
         out = {}
         for k, partsl in wudict.iteritems():
             if partsl:
@@ -736,12 +729,12 @@ class TaskMaster(CborRpcClient):
         ok, msg = self._rpc('worker_heartbeat',
                             (worker_id, mode, lifetime, environment, parent))
         if not ok:
-            logger.error('worker_heartbeat: %r', msg)
+            logger.debug('worker_heartbeat: %r', msg)
 
     def worker_unregister(self, worker_id, parent=None):
         ok, msg = self._rpc('worker_unregister', (worker_id,))
         if not ok:
-            logger.error('worker_unregister: %r', msg)
+            logger.debug('worker_unregister: %r', msg)
 
     def workers(self, alive=True):
         '''Get a listing of all workers.
@@ -758,7 +751,7 @@ class TaskMaster(CborRpcClient):
         # from get_heartbeat() ?
         data, msg = self._rpc('list_worker_modes', ())
         if msg:
-            logger.warn('list_worker_modes: %r', msg)
+            logger.debug('list_worker_modes: %r', msg)
         return data
 
     def get_heartbeat(self, worker_id):
@@ -792,7 +785,7 @@ class TaskMaster(CborRpcClient):
         '''
         data, msg = self._rpc('get_worker_info', (worker_id,))
         if msg:
-            logger.warn('get_worker_info: %r', msg)
+            logger.debug('get_worker_info: %r', msg)
         return data
 
     def mode_counts(self):
@@ -805,7 +798,7 @@ class TaskMaster(CborRpcClient):
         '''
         data, msg = self._rpc('mode_counts', ())
         if msg:
-            logger.warn('mode_counts: %r', msg)
+            logger.debug('mode_counts: %r', msg)
         return data
 
     def add_flow(self, flow, config=None):
@@ -870,5 +863,5 @@ class TaskMaster(CborRpcClient):
         '''Get the server's global configuration.'''
         data, msg = self._rpc('get_config', ())
         if msg:
-            logger.warn('get_config: %r', msg)
+            logger.debug('get_config: %r', msg)
         return data

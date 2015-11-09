@@ -298,7 +298,6 @@ class SingleWorker(Worker):
             available_gb=psutil.virtual_memory().available / 2**30,
             work_spec_names=self.work_spec_names, max_jobs=self.max_jobs)
         if not units:
-            logger.info('No work to do; stopping.')
             return False
         if not isinstance(units, (list, tuple)):
             # got only one work unit back, package it
