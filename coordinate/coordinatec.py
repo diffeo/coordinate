@@ -391,9 +391,9 @@ class CoordinateC(ArgParseCmd):
                 do_text = True
 
         if do_text:
-            self.stdout.write('Work spec               Avail  Pending  Blocked'
+            self.stdout.write('Work spec                   Avail  Pending  Blocked'
                               '   Failed Finished    Total\n')
-            self.stdout.write('==================== ======== ======== ========'
+            self.stdout.write('======================== ======== ======== ========'
                               ' ======== ======== ========\n')
             for name in sorted(xd.keys()):
                 if name == '_NOW':
