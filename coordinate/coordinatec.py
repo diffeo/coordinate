@@ -19,6 +19,7 @@ import cbor
 import yaml
 
 import coordinate
+from coordinate.exceptions import NoSuchWorkSpecError
 from coordinate.job_client import TaskMaster
 from coordinate.workers import SingleWorker
 import dblogger
