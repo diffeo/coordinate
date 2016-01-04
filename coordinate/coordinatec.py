@@ -392,15 +392,15 @@ class CoordinateC(ArgParseCmd):
                 do_text = True
 
         if do_text:
-            self.stdout.write('Work spec                   Avail  Pending  Blocked'
+            self.stdout.write('Work spec                             Avail  Pending  Blocked'
                               '   Failed Finished    Total\n')
-            self.stdout.write('======================== ======== ======== ========'
+            self.stdout.write('================================== ======== ======== ========'
                               ' ======== ======== ========\n')
             for name in sorted(xd.keys()):
                 if name == '_NOW':
                     continue
                 status = xd[name]
-                self.stdout.write('{0:20s} {1[num_available]:8d} '
+                self.stdout.write('{0:30s} {1[num_available]:12d} '
                                   '{1[num_pending]:8d} {1[num_blocked]:8d} '
                                   '{1[num_failed]:8d} {1[num_finished]:8d} '
                                   '{1[num_tasks]:8d}\n'.format(name, status))
