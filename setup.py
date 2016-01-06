@@ -136,7 +136,7 @@ setup(
     ],
     install_requires=[
         'cbor >= 0.1.17',
-        'python-daemon',
+        'python-daemon >= 2.1.0',
         'dblogger',
         'lockfile',
         'psutil',
