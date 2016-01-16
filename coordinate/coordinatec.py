@@ -516,8 +516,8 @@ class CoordinateC(ArgParseCmd):
                     units = self.task_master.get_work_units(
                         work_spec_name, limit=1000,
                         state=self.task_master.FAILED)
-                    units = [u[0] for u in units]  # just need wu key
                     if not units: break
+                    units = [u[0] for u in units]  # just need wu key
                     try:
                         self.task_master.retry(work_spec_name, *units)
                         retried += len(units)
