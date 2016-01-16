@@ -502,12 +502,27 @@ class CoordinateC(ArgParseCmd):
     def args_retry(self, parser):
         self._add_work_spec_name_args(parser)
         parser.add_argument('-a', '--all', action='store_true',
-                            help='retry all failed jobs')
+                            help='retry all failed jobs,'
+                            ' use `-W -` for all work specs.')
         parser.add_argument('unit', nargs='*',
                             help='work unit name(s) to retry')
+
     def do_retry(self, args):
-        '''retry a specific failed job'''
+        '''retry a failed job'''
         work_spec_name = self._get_work_spec_name(args)
+        if work_spec_name == '-' and args.all:
+            work_spec_names = sorted([
+                ws['name'] for ws in self.task_master.iter_work_specs()])
+            self.stdout.write('will retry all work specs: ' +
+                              ' '.join(work_spec_names) + '\n')
+            for ws_name in work_spec_names:
+                self._retry(ws_name, args)
+        else:
+            self._retry(work_spec_name, args)
+
+    def _retry(self, work_spec_name, args):
+        '''retry work unit(s) for a single work spec
+        '''
         retried = 0
         complained = False
         try:
