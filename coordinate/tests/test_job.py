@@ -38,15 +38,18 @@ wu3v = {'wu3v': 3}
 # PostgreSQL backend tests are possible.
 POSTGRES_CONNECT_STRING = None
 try:
-    with open(os.path.join(os.path.dirname(__file__),
-                           'postgres_connect_string.txt'), 'r') as f:
-        POSTGRES_CONNECT_STRING = f.read().strip()
+    if 'PGHOST' in os.environ:
+        POSTGRES_CONNECT_STRING = ''
+    else:
+        with open(os.path.join(os.path.dirname(__file__),
+                               'postgres_connect_string.txt'), 'r') as f:
+            POSTGRES_CONNECT_STRING = f.read().strip()
 except IOError:
     POSTGRES_CONNECT_STRING = None
 
 
 BACKENDS = ['memory', 'sqlite']
-if POSTGRES_CONNECT_STRING:
+if POSTGRES_CONNECT_STRING is not None:
     BACKENDS += ['postgres']
 
 
