@@ -223,11 +223,17 @@ class Worker(object):
         :returns mode: Current mode, as :meth:`TaskMaster.get_mode`
 
         '''
-        mode = self.task_master.get_mode()
-        self.task_master.worker_heartbeat(self.worker_id, mode,
-                                          self.lifetime, self.environment(),
-                                          parent=self.parent)
-        return mode
+        try:
+            mode = self.task_master.get_mode()
+            self.task_master.worker_heartbeat(self.worker_id, mode,
+                                              self.lifetime,
+                                              self.environment(),
+                                              parent=self.parent)
+            return mode
+        except Exception:
+            # If there is a server-side failure heartbeating, don't
+            # let that stop us from doing our job
+            return self.task_master.RUN
 
     @abc.abstractmethod
     def run(self):
@@ -828,7 +834,16 @@ class ForkWorker(Worker):
 
     def check_spinning_children(self):
         '''Stop children that are working on overdue jobs.'''
-        child_jobs = self.task_master.get_child_work_units(self.worker_id)
+        try:
+            child_jobs = self.task_master.get_child_work_units(self.worker_id)
+        except Exception:
+            # This is purely an administrative task, and while it's
+            # very good to do it, if we can't actually, that's okay.
+            # Against the Go Coordinate server this call can fail, and
+            # if it does an uncaught exception here shouldn't take down
+            # the entire worker.
+            return
+        
         # We will kill off any jobs that are due before "now".  This
         # isn't really now now, but now plus a grace period to make
         # sure spinning jobs don't get retried.
@@ -848,7 +863,11 @@ class ForkWorker(Worker):
             if any(unit.expires > now for unit in wul):
                 continue
             # So either someone else is doing its work or it's just overdue
-            environment = self.task_master.get_heartbeat(child)
+            # (As above, ignore server-side failures)
+            try:
+                environment = self.task_master.get_heartbeat(child)
+            except Exception:
+                environment = {}
             if not environment:
                 continue  # derp
             if 'pid' not in environment:
