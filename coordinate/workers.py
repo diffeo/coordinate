@@ -542,7 +542,7 @@ class ForkWorker(Worker):
         'num_workers': None,
         'num_workers_per_core': 1,
         'poll_interval': 1,
-        'spawn_interval': 0.01,
+        'spawn_interval': 0.1,
         'heartbeat_interval': 15,
         'child_lifetime': 10,
         'stop_jobs_early': 15,
