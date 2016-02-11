@@ -1,12 +1,12 @@
 '''Command-line coordinated client.
 
 .. This software is released under an MIT/X11 open source license.
-   Copyright 2012-2014 Diffeo, Inc.
+   Copyright 2012-2016 Diffeo, Inc.
 
 '''
 from __future__ import absolute_import, print_function
 import argparse
-import collections
+import gzip
 from importlib import import_module
 import json
 import logging
@@ -36,7 +36,6 @@ class CoordinateC(ArgParseCmd):
         self.prompt = 'coordinatec> '
         self.client = None
         self.exitcode = 0
-        #self.job_client = None # TaskMaster instance
         self._config = None
         self._task_master = None
 
@@ -59,6 +58,7 @@ class CoordinateC(ArgParseCmd):
                             metavar='FILE', type=existing_path,
                             required=True,
                             help='path to a YAML or JSON file')
+
     def _get_work_spec(self, args):
         '''Get the contents of the work spec from the arguments.'''
         with open(args.work_spec_path) as f:
@@ -101,11 +101,11 @@ class CoordinateC(ArgParseCmd):
             try:
                 count += 1
                 work_unit = json.loads(line)
-                #work_units.update(work_unit)
-                for k,v in work_unit.iteritems():
-                    yield k,v
+                for k, v in work_unit.iteritems():
+                    yield k, v
             except:
-                logger.error('failed handling work_unit on line %s: %r', count, line, exc_info=True)
+                logger.error('failed handling work_unit on line %s: %r',
+                             count, line, exc_info=True)
                 raise
 
     def _work_units_fh_from_path(self, work_units_path):
@@ -196,9 +196,11 @@ class CoordinateC(ArgParseCmd):
 
         if work_units:
             self.stdout.write('pushing work units\n')
-            self.task_master.add_work_units(work_spec['name'], work_units.items())
-            self.stdout.write('finished writing {0} work units to work_spec={1!r}\n'
-                              .format(len(work_units), work_spec['name']))
+            self.task_master.add_work_units(
+                work_spec['name'], work_units.items())
+            self.stdout.write(
+                'finished writing {0} work units to work_spec={1!r}\n'
+                .format(len(work_units), work_spec['name']))
         else:
             self.stdout.write('no work units. done.\n')
 
@@ -267,7 +269,6 @@ class CoordinateC(ArgParseCmd):
         '''Move work units to the front of a work spec queue.'''
         self.task_master.prioritize_work_units(args.spec, args.unit)
 
-
     def args_config(self, parser):
         parser.add_argument('-o', '--output', metavar='FILE',
                             help='write config to FILE')
@@ -283,7 +284,9 @@ class CoordinateC(ArgParseCmd):
 
     def args_status(self, parser):
         parser.add_argument('--logfile', help='file to log statuses to')
-        parser.add_argument('--repeat-seconds', type=float, default=None, help='get status from server repeatedly every N seconds')
+        parser.add_argument('--repeat-seconds', metavar='N', type=float,
+                            default=None,
+                            help='get status from server repeatedly')
 
     def do_status(self, args):
         logfile = None
@@ -294,7 +297,7 @@ class CoordinateC(ArgParseCmd):
                     name = ws['name']
                     counts = self.task_master.count_work_units(name)
                     they.append({'name': name, 'data': ws, 'counts': counts})
-                they.sort(key=lambda x:x['name'])
+                they.sort(key=lambda x: x['name'])
                 if args.logfile:
                     record = {'time': time.time(), 'ws': they}
                     if logfile is None:
@@ -305,7 +308,8 @@ class CoordinateC(ArgParseCmd):
                     # write json text to stdout
                     self.stdout.write(json.dumps(they) + '\n')
                     self.stdout.flush()
-                if (args.repeat_seconds is None) or not (args.repeat_seconds > 0.0):
+                if (((args.repeat_seconds is None) or
+                     not (args.repeat_seconds > 0.0))):
                     break
                 time.sleep(args.repeat_seconds)
         finally:
@@ -314,6 +318,7 @@ class CoordinateC(ArgParseCmd):
 
     def args_worker_stats(self, parser):
         pass
+
     def do_worker_stats(self, args):
         wstats = self.task_master._rpc('worker_stats', [])
         self.stdout.write('{!r}\n'.format(wstats))
@@ -323,10 +328,12 @@ class CoordinateC(ArgParseCmd):
                             dest='assume_yes',
                             help='assume "yes" and require no input for '
                             'confirmation questions.')
+
     def do_delete(self, args):
         '''delete the entire contents of the current coordinate environment'''
         if not args.assume_yes:
-            response = raw_input('Delete everything in the current coordinate environment?')
+            response = raw_input(
+                'Delete everything in the current coordinate environment?')
             if response.lower() not in ('y', 'yes'):
                 self.stdout.write('not deleting anything\n')
                 return
@@ -335,9 +342,11 @@ class CoordinateC(ArgParseCmd):
 
     def args_work_specs(self, parser):
         pass
+
     def do_work_specs(self, args):
         '''print the names of all of the work specs'''
-        work_spec_names = [x['name'] for x in self.task_master.iter_work_specs()]
+        work_spec_names = [x['name']
+                           for x in self.task_master.iter_work_specs()]
         work_spec_names.sort()
         for name in work_spec_names:
             self.stdout.write('{0}\n'.format(name))
@@ -348,6 +357,7 @@ class CoordinateC(ArgParseCmd):
                             help='write output in json')
         parser.add_argument('--yaml', default=False, action='store_true',
                             help='write output in yaml (default)')
+
     def do_work_spec(self, args):
         '''dump the contents of an existing work spec'''
         work_spec_name = self._get_work_spec_name(args)
@@ -373,6 +383,7 @@ class CoordinateC(ArgParseCmd):
                             help='write output in json')
         parser.add_argument('--text', default=None, action='store_true',
                             help='write output in text')
+
     def do_summary(self, args):
         '''print a summary of running work'''
         assert args.json or args.text or (args.text is None)
@@ -392,16 +403,18 @@ class CoordinateC(ArgParseCmd):
                 do_text = True
 
         if do_text:
-            self.stdout.write('Work spec                             Avail  Pending  Blocked'
-                              '   Failed Finished    Total\n')
-            self.stdout.write('================================== ======== ======== ========'
-                              ' ======== ======== ========\n')
+            self.stdout.write(
+                'Work spec                          '
+                '   Avail  Pending   Failed Finished    Total\n')
+            self.stdout.write(
+                '================================== '
+                '======== ======== ======== ======== ========\n')
             for name in sorted(xd.keys()):
                 if name == '_NOW':
                     continue
                 status = xd[name]
                 self.stdout.write('{0:30s} {1[num_available]:12d} '
-                                  '{1[num_pending]:8d} {1[num_blocked]:8d} '
+                                  '{1[num_pending]:8d} '
                                   '{1[num_failed]:8d} {1[num_finished]:8d} '
                                   '{1[num_tasks]:8d}\n'.format(name, status))
 
@@ -475,7 +488,8 @@ class CoordinateC(ArgParseCmd):
                     self.stdout.write('  Expires: {0}\n'.format(when))
             if 'worker_id' in status:
                 try:
-                    heartbeat = self.task_master.get_heartbeat(status['worker_id'])
+                    heartbeat = self.task_master.get_heartbeat(
+                        status['worker_id'])
                 except:
                     heartbeat = None
                 if heartbeat:
@@ -531,7 +545,8 @@ class CoordinateC(ArgParseCmd):
                     units = self.task_master.get_work_units(
                         work_spec_name, limit=1000,
                         state=self.task_master.FAILED)
-                    if not units: break
+                    if not units:
+                        break
                     units = [u[0] for u in units]  # just need wu key
                     try:
                         self.task_master.retry(work_spec_name, *units)
@@ -574,6 +589,7 @@ class CoordinateC(ArgParseCmd):
                             help='print work units in STATUS')
         parser.add_argument('unit', nargs='*',
                             help='work unit name(s) to remove')
+
     def do_clear(self, args):
         '''remove work units from a work spec'''
         # Which units?
@@ -583,22 +599,28 @@ class CoordinateC(ArgParseCmd):
         count = 0
         if args.status is None:
             all = units is None
-            count += self.task_master.del_work_units(work_spec_name, work_unit_keys=units, all=all)
+            count += self.task_master.del_work_units(
+                work_spec_name, work_unit_keys=units, all=all)
         elif args.status == 'available':
             count += self.task_master.del_work_units(
-                work_spec_name, work_unit_keys=units, state=self.task_master.AVAILABLE)
+                work_spec_name, work_unit_keys=units,
+                state=self.task_master.AVAILABLE)
         elif args.status == 'pending':
             count += self.task_master.del_work_units(
-                work_spec_name, work_unit_keys=units, state=self.task_master.PENDING)
+                work_spec_name, work_unit_keys=units,
+                state=self.task_master.PENDING)
         elif args.status == 'blocked':
             count += self.task_master.del_work_units(
-                work_spec_name, work_unit_keys=units, state=self.task_master.BLOCKED)
+                work_spec_name, work_unit_keys=units,
+                state=self.task_master.BLOCKED)
         elif args.status == 'finished':
             count += self.task_master.del_work_units(
-                work_spec_name, work_unit_keys=units, state=self.task_master.FINISHED)
+                work_spec_name, work_unit_keys=units,
+                state=self.task_master.FINISHED)
         elif args.status == 'failed':
             count += self.task_master.del_work_units(
-                work_spec_name, work_unit_keys=units, state=self.task_master.FAILED)
+                work_spec_name, work_unit_keys=units,
+                state=self.task_master.FAILED)
         self.stdout.write('Removed {0} work units.\n'.format(count))
 
     def args_workers(self, parser):
@@ -606,6 +628,7 @@ class CoordinateC(ArgParseCmd):
                             help='list all workers (even dead ones)')
         parser.add_argument('--details', action='store_true',
                             help='include more details if available')
+
     def do_workers(self, args):
         '''list all known workers'''
         workers = self.task_master.workers(alive=not args.all)
@@ -617,14 +640,25 @@ class CoordinateC(ArgParseCmd):
                     self.stdout.write('  {0}: {1}\n'.format(hk, hv))
 
     def args_run_one(self, parser):
-        parser.add_argument('--from-work-spec', action='append', default=[], help='workspec name to accept work from, may be repeated.')
-        parser.add_argument('--limit-seconds', default=None, type=int, metavar='N', help='stop after running for N seconds')
-        parser.add_argument('--limit-count', default=None, type=int, metavar='N', help='stop after running for N work units')
-        parser.add_argument('--max-jobs', default=None, type=int, metavar='N', help='fetch up to N work units at once')
+        parser.add_argument('--from-work-spec', action='append', default=[],
+                            help='workspec name to accept work from, '
+                            'may be repeated')
+        parser.add_argument('--limit-seconds', default=None, type=int,
+                            metavar='N',
+                            help='stop after running for N seconds')
+        parser.add_argument('--limit-count', default=None, type=int,
+                            metavar='N',
+                            help='stop after running N work units')
+        parser.add_argument('--max-jobs', default=None, type=int,
+                            metavar='N',
+                            help='fetch up to N work units at once')
+
     def do_run_one(self, args):
         '''run a single job'''
         work_spec_names = args.from_work_spec or None
-        worker = SingleWorker(self.config, task_master=self.task_master, work_spec_names=work_spec_names, max_jobs=args.max_jobs)
+        worker = SingleWorker(self.config, task_master=self.task_master,
+                              work_spec_names=work_spec_names,
+                              max_jobs=args.max_jobs)
         worker.register()
         rc = False
         starttime = time.time()
@@ -638,14 +672,17 @@ class CoordinateC(ArgParseCmd):
                 if (args.limit_seconds is None) and (args.limit_count is None):
                     # only do one
                     break
-                if (args.limit_seconds is not None) and ((time.time() - starttime) >= args.limit_seconds):
+                if (((args.limit_seconds is not None) and
+                     ((time.time() - starttime) >= args.limit_seconds))):
                     break
-                if (args.limit_count is not None) and (count >= args.limit_count):
+                if (((args.limit_count is not None) and
+                     (count >= args.limit_count))):
                     break
         finally:
             worker.unregister()
         if not rc:
             self.exitcode = 2
+
 
 # utils for arg parsing
 def existing_path(string):
@@ -655,11 +692,12 @@ def existing_path(string):
         raise argparse.ArgumentTypeError(msg)
     return string
 
+
 def existing_path_or_minus(string):
     '''"Convert" a string like :func:`existing_path`, but also accept "-".'''
-    if string == '-': return string
+    if string == '-':
+        return string
     return existing_path(string)
-
 
 
 def main():
