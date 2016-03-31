@@ -130,9 +130,8 @@ class CborRpcClient(object):
             try:
                 self._socket = socket.create_connection(self._socket_addr)
                 self._local_addr = self._socket.getsockname()
-            except:
-                logger.error('error connecting to %r:%r', self._socket_addr[0],
-                             self._socket_addr[1], exc_info=True)
+            except Exception:
+                logger.error('error connecting to %r', self._socket_addr)
                 raise
         return self._socket
 
