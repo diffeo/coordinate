@@ -1,7 +1,7 @@
 '''Dirty mechanics of running a work unit.
 
 .. Your use of this software is governed by your license agreement.
-   Copyright 2014 Diffeo, Inc.
+   Copyright 2014-2016 Diffeo, Inc.
 
 .. autofunction:: run
 .. autofunction:: run_module_func_for_work_unit
@@ -87,17 +87,19 @@ def run_module_func_for_work_unit(work_unit, module_name, func_name,
     elif isinstance(params, collections.Mapping):
         kwargs = params
 
-    logger.info('running work unit %s:%r', work_unit.work_spec_name, work_unit.key)
-    logger.debug('calling %s.%s(%r, *%r, **%r)', module_name, func_name,
-                 work_unit, args, kwargs)
+    logger.info('running work unit %r %r',
+                work_unit.work_spec_name, work_unit.key)
     try:
         ret_val = run_function(work_unit, *args, **kwargs)
         work_unit.finish()
-        logger.info('finished work unit %r', work_unit.key)
+        logger.info('finished work unit %r %r',
+                    work_unit.work_spec_name, work_unit.key)
         return ret_val
     except LostLease:
-        logger.warning('work unit %r timed out', work_unit.key)
+        logger.warning('work unit %r %r timed out',
+                       work_unit.work_spec_name, work_unit.key)
         raise
     except Exception:
-        logger.error('work unit %r failed', work_unit.key, exc_info=True)
+        logger.error('work unit %r %r failed',
+                     work_unit.work_spec_name, work_unit.key, exc_info=True)
         raise

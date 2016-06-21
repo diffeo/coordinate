@@ -1,7 +1,7 @@
 '''Coordinate Worker framework.
 
 .. This software is released under an MIT/X11 open source license.
-   Copyright 2012-2015 Diffeo, Inc.
+   Copyright 2012-2016 Diffeo, Inc.
 
 Gets work units from the coordinate server, manages configuration of
 the local environment, calls the appropriate code to process the work
@@ -352,7 +352,7 @@ class SingleWorker(Worker):
             unit.finish()
         except LostLease:
             # We don't own the unit any more so don't try to report on it
-            logger.warn('Lost Lease on %r', unit.key)
+            logger.warn('Lost Lease on %r %r', unit.work_spec_name, unit.key)
         except Exception, exc:  # pylint: disable=broad-except
             unit.fail(exc)
         return True
