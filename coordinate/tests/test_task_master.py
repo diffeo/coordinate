@@ -1,3 +1,4 @@
+# coding=utf-8
 '''Run coordinate TaskMaster tests under coordinate.
 
 .. Your use of this software is governed by your license agreement.
@@ -6,13 +7,16 @@
 '''
 from __future__ import absolute_import
 import logging
+import random
+import subprocess
+import sys
+import time
 import uuid
 
 import pytest
 
 from coordinate.constants import WORK_UNIT_STATUS_BY_NAME
-from coordinate.exceptions import NoSuchWorkUnitError
-from coordinate.tests.test_job_client import job_queue, task_master
+from coordinate.tests.test_job_client import job_queue, task_master  # noqa
 
 
 logger = logging.getLogger(__name__)
@@ -27,9 +31,10 @@ work_spec = {
     'terminate_function': 'work_program',
 }
 
+
 @pytest.yield_fixture(scope='module')
 def local_server_port():
-    port = random.randint(4000,32000)
+    port = random.randint(4000, 32000)
     logger.info('starting coordinate localhost:%s', port)
     subp = subprocess.Popen([sys.executable, '-m', 'coordinate.run',
                              '-v', '--port', str(port)], shell=False)
@@ -44,7 +49,7 @@ def local_server_port():
         logger.error('error killing coordinate subprocess', exc_info=True)
 
 
-def test_list_work_specs(task_master):
+def test_list_work_specs(task_master):  # noqa
     # Initial state: nothing
     assert task_master.list_work_specs() == ([], None)
 
@@ -58,7 +63,7 @@ def test_list_work_specs(task_master):
     assert specs[work_spec['name']]['desc'] == work_spec['desc']
 
 
-def test_clear(task_master):
+def test_clear(task_master):  # noqa
     # Initial state: nothing
     assert task_master.list_work_specs() == ([], None)
 
@@ -77,7 +82,7 @@ def test_clear(task_master):
     assert task_master.list_work_specs() == ([], None)
 
 
-def test_list_work_units(task_master):
+def test_list_work_units(task_master):  # noqa
     work_units = dict(foo={'length': 3}, foobar={'length': 6})
     task_master.update_bundle(work_spec, work_units)
 
@@ -104,7 +109,7 @@ def test_list_work_units(task_master):
     assert all(k == work_unit.key or k in u for k in work_units.iterkeys())
 
 
-def test_list_work_units_start_limit(task_master):
+def test_list_work_units_start_limit(task_master):  # noqa
     work_units = dict(foo={'length': 3}, bar={'length': 6})
     task_master.update_bundle(work_spec, work_units)
 
@@ -118,7 +123,7 @@ def test_list_work_units_start_limit(task_master):
     assert u == {}
 
 
-def test_del_work_units_simple(task_master):
+def test_del_work_units_simple(task_master):  # noqa
     work_units = dict(foo={'length': 3}, bar={'length': 6})
     task_master.update_bundle(work_spec, work_units)
 
@@ -132,7 +137,7 @@ def test_del_work_units_simple(task_master):
 STATES = ['AVAILABLE', 'PENDING', 'FINISHED', 'FAILED']
 
 
-def prepare_one_of_each(task_master):
+def prepare_one_of_each(task_master):  # noqa
     task_master.update_bundle(work_spec, {'FA': {'x': 1}})
     wu = task_master.get_work('worker', available_gb=16)
     assert wu.key == 'FA'
@@ -150,7 +155,7 @@ def prepare_one_of_each(task_master):
     task_master.update_bundle(work_spec, {'AV': {'x': 1}})
 
 
-@pytest.mark.parametrize('state', STATES)
+@pytest.mark.parametrize('state', STATES)  # noqa
 def test_del_work_units_by_name(task_master, state):
     prepare_one_of_each(task_master)
 
@@ -165,7 +170,7 @@ def test_del_work_units_by_name(task_master, state):
     assert work_unit_keys == set(st[0:2] for st in expected)
 
 
-@pytest.mark.parametrize('state', STATES)
+@pytest.mark.parametrize('state', STATES)  # noqa
 def test_del_work_units_by_state(task_master, state):
     prepare_one_of_each(task_master)
 
@@ -180,7 +185,7 @@ def test_del_work_units_by_state(task_master, state):
     assert work_unit_keys == set(st[0:2] for st in expected)
 
 
-@pytest.mark.parametrize('state', STATES)
+@pytest.mark.parametrize('state', STATES)  # noqa
 def test_del_work_units_by_name_and_state(task_master, state):
     prepare_one_of_each(task_master)
 
@@ -196,7 +201,7 @@ def test_del_work_units_by_name_and_state(task_master, state):
     assert work_unit_keys == set(st[0:2] for st in expected)
 
 
-def prepare_two_of_each(task_master):
+def prepare_two_of_each(task_master):  # noqa
     task_master.update_bundle(work_spec, {'FA': {'x': 1}, 'IL': {'x': 1}})
     wu = task_master.get_work('worker', available_gb=16)
     wu.fail()
@@ -216,7 +221,7 @@ def prepare_two_of_each(task_master):
     task_master.update_bundle(work_spec, {'AV': {'x': 1}, 'AI': {'x': 1}})
 
 
-@pytest.mark.parametrize('state', STATES)
+@pytest.mark.parametrize('state', STATES)  # noqa
 def test_del_work_units_by_name2(task_master, state):
     prepare_two_of_each(task_master)
 
@@ -234,7 +239,7 @@ def test_del_work_units_by_name2(task_master, state):
     assert work_unit_keys == expected
 
 
-@pytest.mark.parametrize('state', STATES)
+@pytest.mark.parametrize('state', STATES)  # noqa
 def test_del_work_units_by_state2(task_master, state):
     prepare_two_of_each(task_master)
 
@@ -253,7 +258,7 @@ def test_del_work_units_by_state2(task_master, state):
     assert work_unit_keys == expected
 
 
-@pytest.mark.parametrize('state', STATES)
+@pytest.mark.parametrize('state', STATES)  # noqa
 def test_del_work_units_by_name_and_state2(task_master, state):
     prepare_two_of_each(task_master)
 
@@ -272,8 +277,7 @@ def test_del_work_units_by_name_and_state2(task_master, state):
     assert work_unit_keys == expected
 
 
-
-def test_task_master_regenerate(task_master):
+def test_task_master_regenerate(task_master):  # noqa
     '''test that getting work lets us resubmit the work spec'''
     task_master.update_bundle(work_spec, {'one': {'number': 1}})
 
@@ -290,8 +294,7 @@ def test_task_master_regenerate(task_master):
     assert work_unit3 is None
 
 
-
-def test_task_master_binary_work_unit(task_master):
+def test_task_master_binary_work_unit(task_master):  # noqa
     work_units = {
         b'\x00': {'k': b'\x00', 't': 'single null'},
         b'\x00\x01\x02\x03': {'k': b'\x00\x01\x02\x03', 't': 'control chars'},
@@ -324,7 +327,7 @@ def test_task_master_binary_work_unit(task_master):
             work_units)
 
 
-def test_task_master_work_unit_value(task_master):
+def test_task_master_work_unit_value(task_master):  # noqa
     work_units = {
         'k': {'list': [1, 2, 3],
               'tuple': (4, 5, 6),
@@ -332,8 +335,7 @@ def test_task_master_work_unit_value(task_master):
               'uuid': uuid.UUID('01234567-89ab-cdef-0123-456789abcdef'),
               'str': b'foo',
               'unicode': u'foo',
-              'unicode2': u'f\u00fc'}
+              'unicode2': u'fü'}
     }
     task_master.update_bundle(work_spec, work_units)
     assert task_master.list_work_units(work_spec['name']) == work_units
-

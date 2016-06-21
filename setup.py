@@ -151,6 +151,7 @@ setup(
         ],
     },
     include_package_data=True,
+    zip_safe=False,
     # We don't want all the data files shipping.
     # + recursive_glob_with_tree('data', '*'),
     entry_points={
